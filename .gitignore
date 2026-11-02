@@ -1,0 +1,26 @@
+# ── 运行时数据（体积大、含 gcode/模型，不入库）────────────────────────
+slicer-node/data06/
+slicer-node/tmp/
+slicer-node/result.json
+
+# ── 上游二进制 ────────────────────────────────────────────────────────
+slicer-node/vendor/
+*.AppImage
+
+# ── 大体积测试模型 ────────────────────────────────────────────────────
+slicer-node/tests/fixtures/vase-120k.stl
+
+# ── Python ────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# ── 日志与临时产物 ────────────────────────────────────────────────────
+*.log
+dist/
+*.tar.gz
+.DS_Store
+*.swp

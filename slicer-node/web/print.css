@@ -1,0 +1,63 @@
+/* ---------- 打印控制 / 耗材料盘 ---------- */
+h4.sec { margin: 14px 0 6px; font-size: 12px; color: var(--dim); font-weight: 600;
+  text-transform: uppercase; letter-spacing: .5px; }
+h4.sec .hint { text-transform: none; letter-spacing: 0; margin-left: 6px; }
+.nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pl-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 6px 12px; margin-top: 8px; font-size: 12px; }
+.pl-stats .k { color: var(--dim); display: block; font-size: 11px; }
+
+.tempcards { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 8px; }
+.tcard { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 9px 10px;
+  display: flex; flex-direction: column; gap: 5px; }
+.tcard.hot { border-color: #5a3a22; }
+.tcard .tl { font-size: 11.5px; color: var(--dim); }
+.tcard .tbig b { font-size: 22px; font-variant-numeric: tabular-nums; }
+.tcard.hot .tbig b { color: var(--acc); }
+.tcard input.tset { width: 64px; padding: 3px 5px; }
+.tcard button { padding: 3px 7px; font-size: 12px; }
+
+.jogwrap { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+.jogpad { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; width: 168px; flex: none; }
+.jogpad button { padding: 10px 0; font-size: 13px; }
+.jogcol { display: flex; flex-direction: column; gap: 6px; flex: 1; min-width: 220px; }
+.jogcol .k { color: var(--dim); font-size: 12px; width: 34px; flex: none; }
+.jogcol .row { gap: 6px; }
+#gcode-log .gl-send { color: var(--acc2); }
+#gcode-log .gl-ok { color: var(--ok); }
+#gcode-log .gl-err { color: var(--err); }
+
+.slotgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 8px; }
+.slotcard { background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+  padding: 9px 10px; display: flex; flex-direction: column; gap: 6px; }
+.slotcard.cur { border-color: var(--acc); box-shadow: 0 0 0 1px var(--acc) inset; }
+.slotcard select { font-size: 12px; }
+.bar { height: 6px; background: #10141a; border-radius: 3px; overflow: hidden; }
+.bar > i { display: block; height: 100%; background: var(--ok); }
+.bar.low > i { background: var(--warn); }
+
+.spoolrow { display: flex; align-items: center; gap: 10px; padding: 8px 10px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 8px; margin-bottom: 6px; }
+.spoolrow .nm { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.spoolrow .nm b { font-size: 13px; }
+.spoolrow .mid { width: 180px; flex: none; display: flex; flex-direction: column; gap: 3px; }
+.spoolrow .acts { display: flex; gap: 6px; align-items: center; flex: none; }
+.spoolrow .acts select { width: 78px; }
+
+.rec { padding: 8px 10px; border-bottom: 1px solid rgba(255,255,255,.04); font-size: 12px; }
+.rec:last-child { border-bottom: 0; }
+
+.modal { position: fixed; inset: 0; background: rgba(8,10,13,.62); display: none;
+  align-items: center; justify-content: center; z-index: 50; padding: 14px; }
+.modal.on { display: flex; }
+.modal-box { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+  padding: 14px; width: min(440px, 100%); max-height: 90vh; overflow: auto;
+  box-shadow: 0 18px 50px rgba(0,0,0,.5); }
+.formgrid { display: grid; grid-template-columns: 86px 1fr; gap: 7px 10px; align-items: center; }
+.formgrid label { font-size: 12px; }
+
+@media (max-width: 780px) {
+  .spoolrow { flex-wrap: wrap; }
+  .spoolrow .mid { width: 100%; }
+  .jogpad { width: 140px; }
+}

@@ -1,0 +1,2295 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Voron · 预览</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23242424'/%3E%3Cpath d='M8 22h16M8 16h16M8 10h16' stroke='%23ff7d38' stroke-width='3'/%3E%3C/svg%3E">
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #242424;
+    --panel: rgba(28, 28, 28, .92);
+    --line: #3a3a3a;
+    --text: #e6e6e6;
+    --dim: #9a9a9a;
+    --accent: #23a9f2;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    margin: 0; height: 100%; overflow: hidden; background: var(--bg);
+    color: var(--text); -webkit-user-select: none; user-select: none;
+    font: 12px/1.45 -apple-system, BlinkMacSystemFont, "PingFang SC",
+          "Noto Sans CJK SC", "Segoe UI", sans-serif;
+    touch-action: none;
+  }
+  canvas#gl { display: block; width: 100%; height: 100%; }
+
+  /* ---------- 顶栏 ---------- */
+  #topbar {
+    position: fixed; top: 0; left: 0; right: 0; height: 44px;
+    display: flex; align-items: center; gap: 6px; padding: 0 10px;
+    background: linear-gradient(rgba(20,20,20,.96), rgba(20,20,20,.72) 70%, transparent);
+    z-index: 10;
+  }
+  #title { font-size: 12px; color: var(--dim); margin-right: auto;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .btn {
+    background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.09);
+    color: #d8d8d8; border-radius: 6px; padding: 5px 9px; font: inherit;
+    cursor: pointer; white-space: nowrap; transition: background .12s;
+  }
+  .btn:active { background: rgba(255,255,255,.14); }
+  .btn.on { background: rgba(35,169,242,.20); border-color: rgba(35,169,242,.55);
+    color: #bfe6ff; }
+  .sep { width: 1px; height: 18px; background: rgba(255,255,255,.10); }
+  /* 明暗三档滑杆 */
+  #shade {
+    -webkit-appearance: none; appearance: none; width: 68px; height: 18px;
+    background: transparent; margin: 0; cursor: pointer;
+  }
+  #shade::-webkit-slider-runnable-track {
+    height: 4px; border-radius: 2px;
+    background: linear-gradient(90deg, rgba(35,169,242,.75), rgba(35,169,242,.25));
+  }
+  #shade::-webkit-slider-thumb {
+    -webkit-appearance: none; width: 12px; height: 12px; margin-top: -4px;
+    border-radius: 50%; background: #bfe6ff; border: 1px solid rgba(35,169,242,.8);
+  }
+  #shade::-moz-range-track {
+    height: 4px; border-radius: 2px;
+    background: linear-gradient(90deg, rgba(35,169,242,.75), rgba(35,169,242,.25));
+  }
+  #shade::-moz-range-thumb {
+    width: 11px; height: 11px; border-radius: 50%; background: #bfe6ff;
+    border: 1px solid rgba(35,169,242,.8);
+  }
+  #shadetag { font-size: 10.5px; color: var(--dim); min-width: 38px; }
+  @media (max-width: 460px) { #shade { width: 52px; } #shadetag { display: none; } }
+
+  /* ---------- 右侧层滑块 ---------- */
+  #layercol {
+    position: fixed; top: 48px; bottom: 74px; right: 0; width: 46px;
+    z-index: 9; display: flex; flex-direction: column; align-items: center;
+    touch-action: none;
+  }
+  #layercol canvas { width: 30px; flex: 1; border-radius: 4px;
+    background: rgba(255,255,255,.045); cursor: ns-resize; }
+  #layerz { font-size: 10px; color: var(--dim); padding: 3px 0; font-variant-numeric: tabular-nums; }
+
+  /* ---------- 图例 ---------- */
+  #legend {
+    position: fixed; left: 10px; bottom: 46px; z-index: 9; min-width: 208px;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+    padding: 7px 9px 6px; backdrop-filter: blur(8px); font-size: 11px;
+  }
+  #legend .lg-head { display: flex; align-items: center; gap: 6px;
+    color: var(--dim); margin-bottom: 5px; cursor: pointer; font-size: 10.5px;
+    letter-spacing: .04em; }
+  #legend .lg-head b { color: var(--text); font-weight: 500; letter-spacing: 0; }
+  #legend table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+  #legend td { padding: 1.5px 0; white-space: nowrap; }
+  #legend td.n { text-align: right; color: var(--dim); padding-left: 10px; }
+  #legend tr.row { cursor: pointer; }
+  #legend tr.row.off { opacity: .32; }
+  #legend tr.row.off .sw span { opacity: .3; }
+  #legend .sw { display: inline-block; width: 9px; height: 9px; border-radius: 2px;
+    margin-right: 6px; vertical-align: -1px; }
+  #legend.collapsed table { display: none; }
+  /* 着色依据选择器 */
+  #scheme {
+    background: rgba(255,255,255,.08); color: #e8e8e8;
+    border: 1px solid rgba(255,255,255,.14); border-radius: 5px;
+    font: inherit; font-size: 11px; padding: 2px 4px; max-width: 132px;
+    -webkit-appearance: none; appearance: none;
+  }
+  #scheme:focus { outline: 1px solid rgba(35,169,242,.6); }
+  /* 连续量的渐变色带（竖条，跟 OrcaSlicer 的图例一样） */
+  #lgbar { display: none; gap: 8px; align-items: stretch; padding: 2px 0 1px; }
+  #lgbar.on { display: flex; }
+  #lgbar .ramp { width: 14px; height: 86px; border-radius: 3px;
+    border: 1px solid rgba(255,255,255,.12); }
+  #lgbar .ticks { display: flex; flex-direction: column; justify-content: space-between;
+    height: 86px; font-size: 10px; color: var(--dim);
+    font-variant-numeric: tabular-nums; line-height: 1.1; }
+  #lgbar .ticks em { color: var(--text); font-style: normal; }
+  #lgbar .note { font-size: 10px; color: var(--dim); line-height: 1.5; max-width: 132px; }
+  #lgnote { font-size: 9.5px; color: var(--dim); line-height: 1.45; margin-top: 4px;
+    max-width: 210px; }
+
+  /* ---------- 底栏 ---------- */
+  #bottombar {
+    position: fixed; left: 0; right: 0; bottom: 0; height: 38px; z-index: 9;
+    display: flex; align-items: center; gap: 14px; padding: 0 12px;
+    background: linear-gradient(transparent, rgba(20,20,20,.94) 40%);
+    font-variant-numeric: tabular-nums; color: #cfcfcf; font-size: 11.5px;
+    overflow: hidden; white-space: nowrap;
+  }
+  #bottombar b { color: #fff; font-weight: 600; }
+  #bottombar .k { color: var(--dim); }
+
+  #hint {
+    position: fixed; left: 50%; top: 50%; transform: translate(-50%,-50%);
+    text-align: center; color: var(--dim); font-size: 12px; line-height: 1.8;
+    z-index: 20; pointer-events: none;
+  }
+  #hint input { pointer-events: auto; }
+  #toast {
+    position: fixed; left: 50%; bottom: 52px; transform: translateX(-50%);
+    background: rgba(200,60,60,.92); color: #fff; padding: 7px 12px;
+    border-radius: 7px; font-size: 12px; opacity: 0; transition: opacity .25s;
+    z-index: 30; pointer-events: none; max-width: 80%;
+  }
+  #toast.show { opacity: 1; }
+  @media (max-width: 460px) {
+    #legend { min-width: 176px; font-size: 10.5px; }
+    #bottombar { gap: 10px; font-size: 10.5px; }
+    #title { display: none; }
+  }
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+
+<div id="topbar">
+  <span id="title">—</span>
+  <button class="btn on" data-mode="single">单层</button>
+  <button class="btn" data-mode="accum">累积</button>
+  <button class="btn" data-mode="all">全部</button>
+  <span class="sep"></span>
+  <button class="btn" id="play">▶</button>
+  <span class="sep"></span>
+  <button class="btn" data-view="iso">等轴</button>
+  <button class="btn" data-view="top">俯视</button>
+  <button class="btn" data-view="front">正视</button>
+  <span class="sep"></span>
+  <button class="btn on" id="btn3d" title="体积管 / 屏幕线">体积</button>
+  <span class="sep"></span>
+  <input id="shade" type="range" min="0" max="2" step="1" value="1"
+         title="明暗强度：平涂 / 标准 / 强明暗">
+  <span id="shadetag">标准</span>
+</div>
+
+<div id="layercol">
+  <canvas id="layerslider"></canvas>
+  <div id="layerz">—</div>
+</div>
+
+<div id="legend">
+  <div class="lg-head" id="lghead">
+    <select id="scheme" title="着色依据"></select>
+    <span id="lgsum" style="margin-left:auto"></span></div>
+  <table id="lgtbl"></table>
+  <div id="lgbar"></div>
+  <div id="lgnote"></div>
+</div>
+
+<div id="bottombar">
+  <span><span class="k">层</span> <b id="bLayer">—</b></span>
+  <span><span class="k">Z</span> <b id="bZ">—</b></span>
+  <span><span class="k">本层</span> <b id="bLT">—</b></span>
+  <span><span class="k">总用时</span> <b id="bT">—</b></span>
+  <span><span class="k">耗材</span> <b id="bF">—</b></span>
+</div>
+
+<div id="hint">等待任务…</div>
+<div id="toast"></div>
+
+<script>
+"use strict";
+
+/* ========================================================================
+   配色：直接取自 OrcaSlicer（libvgcode DEFAULT_EXTRUSION_ROLES_COLORS）
+   ======================================================================== */
+const ROLE_COLORS = [
+  [255, 125, 56],   // 0  外墙     ExternalPerimeter
+  [255, 230, 77],   // 1  内墙     Perimeter
+  [255, 170, 90],   // 2  悬垂墙   OverhangWall
+  [176, 48, 41],    // 3  稀疏填充 InternalInfill
+  [150, 84, 204],   // 4  实心填充 SolidInfill
+  [240, 64, 64],    // 5  顶面     TopSolidInfill
+  [205, 120, 140],  // 6  底面     BottomSurface
+  [77, 128, 186],   // 7  桥接     BridgeInfill
+  [90, 170, 200],   // 8  内部桥接 InternalBridge
+  [0, 255, 0],      // 9  支撑     SupportMaterial
+  [0, 170, 90],     // 10 支撑界面 SupportInterface
+  [160, 160, 170],  // 11 缝隙填充 GapFill
+  [120, 200, 255],  // 12 裙边     Skirt/Brim
+  [200, 200, 200],  // 13 自定义   Custom
+  [230, 179, 179],  // 14 其他
+];
+const C_GRID = [58, 58, 58];
+const C_BORDER = [96, 96, 96];
+const C_AXIS_X = [176, 74, 74];
+const C_AXIS_Y = [92, 152, 92];
+const PALETTE = [...ROLE_COLORS, C_GRID, C_BORDER, C_AXIS_X, C_AXIS_Y];
+const T_GRID = 15, T_BORDER = 16, T_AXX = 17, T_AXY = 18;
+
+/* 属性着色：分类（≤6 个取值）用离散色，连续值用光谱渐变 */
+const CAT_COLORS = [
+  [77, 128, 186], [255, 176, 56], [91, 200, 91], [220, 92, 140],
+  [150, 84, 204], [72, 201, 201], [230, 222, 90], [192, 192, 192],
+];
+const RAMP_STOPS = [
+  [49, 54, 149], [69, 117, 180], [116, 173, 209], [171, 217, 233],
+  [224, 243, 248], [255, 255, 191], [254, 224, 144], [253, 174, 97],
+  [244, 109, 67], [215, 48, 39], [165, 0, 38],
+];
+function rampColor(t) {
+  t = Math.max(0, Math.min(1, t)) * (RAMP_STOPS.length - 1);
+  const i = Math.min(RAMP_STOPS.length - 2, Math.floor(t));
+  const f = t - i, a = RAMP_STOPS[i], b = RAMP_STOPS[i + 1];
+  return [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f];
+}
+function rgbCss(c) { return `rgb(${Math.round(c[0])},${Math.round(c[1])},${Math.round(c[2])})`; }
+/* 全模型只有一个取值时用的中性色（别和分类色撞车，否则会被误读成某一档） */
+const FLAT_COLOR = [146, 164, 194];
+
+/* 着色依据：k = index["attrs"] 里的列号 */
+const SCHEMES = [
+  { id: "type", label: "走线类型", kind: "type", note: "按 ;TYPE: 角色，点击图例可隐藏" },
+  { id: "tool", label: "挤出机", k: 0, unit: "", fmt: v => "T" + v,
+    note: "T0/T1 与 M104 T" },
+  { id: "speed", label: "速度", k: 1, unit: "mm/s", fmt: v => v.toFixed(0),
+    note: "逐段 G1 F ÷ 60：指令上限。机器实际跑多快看「实际速度」" },
+  { id: "fan", label: "风扇", k: 2, unit: "%", fmt: v => v.toFixed(0),
+    note: "M106 S ÷ 255" },
+  { id: "temp", label: "喷嘴温度", k: 3, unit: "°C", fmt: v => v.toFixed(0),
+    note: "M104/M109，缺省取耗材温度" },
+  { id: "accel", label: "加速度", k: 4, unit: "mm/s²", fmt: v => v.toFixed(0),
+    note: "M204 S / SET_VELOCITY_LIMIT ACCEL" },
+  { id: "jerk", label: "抖动", k: 5, unit: "mm/s", fmt: v => v.toFixed(1),
+    note: "M205 J / SQUARE_CORNER_VELOCITY" },
+  { id: "vact", label: "实际速度", kind: "vact", unit: "mm/s", fmt: v => v.toFixed(0),
+    note: "Klipper lookahead 回放：转角/折返降到 square_corner_velocity，长直段才冲到指令速度" },
+  { id: "aeff", label: "实际加速度", kind: "aeff", unit: "mm/s²", fmt: v => v.toFixed(0),
+    note: "|v₂²−v₁²| ÷ 2L：≈0 是匀速段，接近机器加速度说明这段正在加速/减速" },
+];
+
+const cv = document.getElementById("gl");
+const gl = cv.getContext("webgl2", { antialias: true, alpha: false,
+  depth: true, powerPreference: "high-performance" });
+const hintEl = document.getElementById("hint");
+
+/* ---------------------------------------------------------------- 矩阵 */
+const M4 = {
+  perspective(fovy, asp, n, f) {
+    const t = 1 / Math.tan(fovy / 2), d = 1 / (n - f);
+    return new Float32Array([t / asp, 0, 0, 0, 0, t, 0, 0, 0, 0, (f + n) * d, -1, 0, 0, 2 * f * n * d, 0]);
+  },
+  mul(a, b) {
+    const o = new Float32Array(16);
+    for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) {
+      let s = 0;
+      for (let k = 0; k < 4; k++) s += a[k * 4 + j] * b[i * 4 + k];
+      o[i * 4 + j] = s;
+    }
+    return o;
+  },
+  lookAt(eye, at, up) {
+    let zx = eye[0] - at[0], zy = eye[1] - at[1], zz = eye[2] - at[2];
+    let l = Math.hypot(zx, zy, zz) || 1; zx /= l; zy /= l; zz /= l;
+    let xx = up[1] * zz - up[2] * zy, xy = up[2] * zx - up[0] * zz, xz = up[0] * zy - up[1] * zx;
+    l = Math.hypot(xx, xy, xz) || 1; xx /= l; xy /= l; xz /= l;
+    const yx = zy * xz - zz * xy, yy = zz * xx - zx * xz, yz = zx * xy - zy * xx;
+    return new Float32Array([
+      xx, yx, zx, 0, xy, yy, zy, 0, xz, yz, zz, 0,
+      -(xx * eye[0] + xy * eye[1] + xz * eye[2]),
+      -(yx * eye[0] + yy * eye[1] + yz * eye[2]),
+      -(zx * eye[0] + zy * eye[1] + zz * eye[2]), 1]);
+  }
+};
+/* ---------------------------------------------------------------- 着色器 */
+/* 参考 OrcaSlicer 的 GCodeViewer 思路（src/slic3r/GUI/GCodeViewer.cpp）：
+   1) 走线几何一次性上传成静态顶点缓冲，每一帧只改「画哪一段」，
+      不做逐层 buffer 上传、不逐层重设 uniform —— 这是 Orca 预览流畅的根本；
+   2) 每段的颜色（按类型的调色板 / 按速度等属性的渐变）在着色器里取，
+      颜色是顶点属性而不是逐个 draw call 的 uniform；
+   3) 预览是不透明的：层与层之间用配色区分，不用 alpha 混合。半透明 +
+      深度写入会让同一面被叠加多次、绘制顺序一变颜色就变，这正是
+      以前「透明度忽深忽浅 / 面闪」的来源；
+   4) 层的可见性靠 z 判断（单层 / 累积 / 全部），不再是逐层 draw。
+
+   与 Orca 的差别：本预览每段的数据来自服务端预先算好的定长记录
+   （20 字节/段：x0 y0 x1 y1 | type | area | attr），所以整份文件就是
+   一条可以直接当实例属性用的流，连 CPU 侧重组都不需要。 */
+
+const FOVY = Math.PI / 5;         // 与 draw() 里的 perspective 保持一致
+const BG = [0.141, 0.141, 0.141];
+const WIDTH_SCALE = 1.15;         // 线宽 = 截面积/层高 × 该系数（搭接余量，防漏缝）
+const LINE_MM = 0.45;             // 没有面积数据时的兜底线宽
+const MIN_HALF_PX = 0.60;         // 设备像素：最细也留 1.2 px，避免亚像素线被光栅器漏成虚线
+const MITER_LIMIT = 3.0;          // 斜接长度上限（单位 = 半线宽），再尖的角就削平
+const JOINT_LEN_FRAC = 0.45;      // 角点沿段方向最多伸到段长的这个比例（>0.5 会翻领结）
+const MAX_HALF_PX = 400.0;        // 基本不封顶：线宽必须跟着缩放走，放大才不会出现层间缝
+const CAPS_MIN_PX = 4.5;          // 宽度够粗才画球冠端帽
+/* 体积管的三角形预算按「当前视图真正要画的段数」算，不是整份文件的段数：
+   单层/累积模式只看几层，几十万段的任务照样能用管；只有「全部」才是全量。 */
+const CAPS_SEG_BUDGET = 200000;   // caps 48 三角/段
+const TUBE_SEG_BUDGET = 1600000;  // thin 16 三角/段
+
+const GLSL_HEAD = `#version 300 es
+precision highp float;
+precision highp sampler2D;
+
+in vec2 aStart;       // 每段：起点 xy（实例属性）
+in vec2 aEnd;         // 每段：终点 xy
+in float aZ;          // 每段：所属层的高度 z
+in float aType;       // 每段：走线类型 0..14
+in float aArea;       // 每段：挤出截面积 / uAreaStep
+in float aAttr;       // 每段：attrs 表行号（着色依据用）
+in float aVact;       // 每段：Klipper 限速后的真实速度 ×100（mm/s）
+in float aAeff;       // 每段：段内有效加速度 mm/s²
+
+uniform mat4 uVP;
+uniform vec2 uViewport;     // 半屏像素尺寸，用来把毫米换成像素
+uniform float uProj;        // (H/2)/tan(fov/2)
+uniform float uLayerH;      // 当前层高，把截面积换算成线宽
+uniform float uAreaOn;      // 0 = 没有截面积数据（旧任务/底板）
+uniform float uAreaStep;
+uniform float uWidthScale;
+uniform float uMinHalfPx;
+uniform float uMaxHalfPx;
+uniform vec3 uColors[20];   // 类型调色板（含底板网格用的几个）
+uniform int uColorMode;     // 0 = 按类型, 1 = 属性表, 2 = 真实速度, 3 = 真实加速度
+uniform sampler2D uRowColor;
+uniform vec2 uVRange;       // 连续量（速度/加速度）的取值范围
+uniform int uRowCount;      // uRowColor 的行数（渐变表）
+uniform int uMode;          // 0 = 单层, 1 = 累积, 2 = 全部
+uniform float uZCur;
+uniform float uZBot;
+uniform int uHiddenMask;    // 按类型隐藏的位掩码
+uniform vec3 uBg;
+uniform float uShade;       // 1 = 给屏幕线加横截面明暗（底板网格为 0）
+
+out vec3 vColor;
+out float vFade;
+
+/* 层可见性 + 淡出。淡出是「向底色混合」而不是 alpha：
+   结果与绘制顺序无关，重叠处不会叠加出深浅不一的斑块。 */
+float layer_fade(float z) {
+  float h = max(uLayerH, 0.04);
+  if (uMode == 2) return 1.0;
+  if (uMode == 1) {
+    if (z > uZCur + 0.6 * h) return 0.0;
+    return 0.22 + 0.78 * clamp((z - uZBot) / max(uZCur - uZBot, 0.05), 0.0, 1.0);
+  }
+  float d = (uZCur - z) / h;          // 0 = 当前层，1 = 下一层
+  if (d < -0.5) return 0.0;
+  if (d <= 0.6) return 1.0;
+  if (d > 2.4) return 0.0;            // 只留当前层 + 下面两层做参考
+  return 1.0 - 0.30 * d;
+}
+
+bool type_hidden(float t) {
+  int i = int(t + 0.5);
+  return i >= 0 && i < 31 && ((uHiddenMask >> i) & 1) == 1;
+}
+
+vec3 seg_color(float t) {
+  if (uColorMode == 2 || uColorMode == 3) {
+    // 连续量：真实速度/加速度 → 渐变表的一行
+    float v = (uColorMode == 2) ? aVact * 0.01 : aAeff;
+    float k = (v - uVRange.x) / max(uVRange.y - uVRange.x, 1e-3);
+    int row = int(clamp(k, 0.0, 1.0) * float(uRowCount - 1) + 0.5);
+    return texelFetch(uRowColor, ivec2(row, 0), 0).rgb;
+  }
+  if (uColorMode == 1) return texelFetch(uRowColor, ivec2(int(aAttr + 0.5), 0), 0).rgb;
+  return uColors[int(t + 0.5)];
+}
+
+/* 线宽 = 截面积 / 层高（× 搭接余量）。areaq 传 0 以外的值时用邻段的截面积，
+   用来在拐点上和邻段「谈妥」一个共同线宽 —— 见 main() 里的 wStart / wEnd。 */
+float width_of(float areaq) {
+  return uAreaOn > 0.5
+    ? clamp(areaq * uAreaStep / max(uLayerH, 0.02) * uWidthScale, 0.10, 1.60)
+    : 0.45;
+}
+
+float line_width() { return width_of(aArea); }
+
+`;
+
+/* 屏幕空间粗线：每段一个实例化的四边形（6 顶点），近/远景都在用 */
+const VS_FLAT = GLSL_HEAD + `
+in vec2 aCorner;      // (沿线 0..1, 法向 -1..1)
+/* 拐点角点偏移（mm，世界 XY）——CPU 侧算好，两侧共用同一个向量：
+     aNbP = (上一拐点: side +1 的偏移 xy, side −1 的偏移 xy)
+     aNbN = (下一拐点: 同上)
+   全零 = 这个端点没有相邻段，退回方头端帽。
+
+   为什么不在着色器里算斜接：斜接长度 = hw/cos(θ/2)，碎段（弧上 0.05~0.2 mm
+   的锯齿）上它会超过段长本身，四边形翻成「领结」—— 就是用户看到的
+   「端点两头交叉重叠」；要截断得知道两段的长度，而截断量必须两边一模一样，
+   否则角点又错开半个线宽 —— 就是用户看到的「短线段断开」。
+   放到 CPU 侧一次算清、两侧读到同一个向量，两个毛病一起消掉：
+   角点在屏幕上是同一个点，没有缝，也没有画两遍的那块。 */
+in vec4 aNbP;
+in vec4 aNbN;
+uniform float uJoin;  // 1 = 用上面的拐点偏移，0 = 一律方头端帽（底板网格）
+out float vSide;
+out float vEdgeK;     // 这段有多粗：太细就不做「中间亮两侧暗」，否则看着像断续的斑马纹
+
+vec2 scr(vec4 c) { return c.xy / max(abs(c.w), 1e-4) * uViewport; }
+
+void main() {
+  float fade = layer_fade(aZ);
+  vSide = aCorner.y;
+  if (fade <= 0.0 || type_hidden(aType)) {   // 整段退化 → 光栅化阶段直接丢弃
+    vColor = vec3(0.0); vFade = 0.0; vEdgeK = 0.0;
+    gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+    return;
+  }
+  vFade = fade;
+  vColor = seg_color(aType);
+  vec4 p0 = uVP * vec4(aStart, aZ, 1.0);
+  vec4 p1 = uVP * vec4(aEnd, aZ, 1.0);
+  vec2 s0 = scr(p0);
+  vec2 s1 = scr(p1);
+  vec2 d = s1 - s0;
+  float len = length(d);
+  vec2 dir = len > 1e-5 ? d / len : vec2(0.0, 1.0);
+  vec2 nrm = vec2(-dir.y, dir.x);
+  bool atStart = aCorner.x < 0.5;
+  /* 线宽 = 物理挤出宽度 × 当前缩放（pxPerMm），只留一个极小的像素保底。
+     以前钳在 [0.8, 4.5] px：放大到一定程度线不再变粗，而相邻走线的间距
+     还在变大，于是出现「层间缝隙」；缩小到一定程度线又比间距粗，
+     叠在一起就成了「挤压」。钳位放开后就与几何严格同步。 */
+  float hw = clamp(0.5 * line_width() * (uProj / max(abs(atStart ? p0.w : p1.w), 1e-4)),
+                   uMinHalfPx, uMaxHalfPx);
+  vEdgeK = clamp((hw - 0.6) / 1.6, 0.0, 1.0);
+  /* 兜底：方头端帽。层首层尾、跳转、数据还没下完时用它，单段也不缺口。 */
+  vec2 off = nrm * (aCorner.y * hw) + dir * ((atStart ? -1.0 : 1.0) * hw);
+  if (uJoin > 0.5) {
+    vec4 nb = atStart ? aNbP : aNbN;
+    vec2 ow = aCorner.y > 0.0 ? nb.xy : nb.zw;
+    if (dot(ow, ow) > 1e-10) {
+      /* mm → 视口单位，用的比例和 hw 完全一样（uProj / w），所以拐点
+         偏移和线宽是同一套尺度；再按顶点 w 折回裁剪空间。 */
+      off = ow * (uProj / max(abs(atStart ? p0.w : p1.w), 1e-4));
+    }
+  }
+  vec4 pc = atStart ? p0 : p1;
+  pc.xy += off / uViewport * pc.w;
+  gl_Position = pc;
+}`;
+
+/* 折线（Polyline）渲染：顶点就是折线上的角点，几何在 CPU 侧按折线一次算好，
+   shader 只做投影。和上面那条「每段一个实例化四边形」的路径二选一：
+   详见 buildRibbons() 里的说明。 */
+const VS_RIBBON = GLSL_HEAD + `
+in vec4 aRib;     // x, y, z, 本段切线的角度（弧度，世界 XY 平面内）
+in float aHw;     // ±半线宽（mm；符号 = 横截面的哪一侧）
+in float aNbrt;   // 拐点另一侧那段的切线角度（没有相邻段时 = 本段切线）
+out float vSide;
+out float vEdgeK;
+
+/* 把「世界 XY 里的一个方向」投到屏幕上，只留方向（长度丢掉）。
+   点距取 0.05 mm：只影响方向精度，不影响线宽。 */
+vec2 scrDir(vec4 pc, float ang) {
+  vec2 d = vec2(cos(ang), sin(ang));
+  vec4 p2 = uVP * vec4(aRib.xy + d * 0.05, aRib.z, 1.0);
+  vec2 v = p2.xy / max(abs(p2.w), 1e-4) - pc.xy / max(abs(pc.w), 1e-4);
+  float l = length(v);
+  return l > 1e-9 ? v / l : vec2(0.0);
+}
+
+void main() {
+  float side = aHw < 0.0 ? -1.0 : 1.0;
+  float hw = abs(aHw);
+  float fade = layer_fade(aRib.z);
+  if (fade <= 0.0 || type_hidden(aType)) {      // 整段退化 → 光栅化阶段丢弃
+    vColor = vec3(0.0); vFade = 0.0; vSide = 0.0; vEdgeK = 0.0;
+    gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+    return;
+  }
+  vFade = fade;
+  vColor = seg_color(aType);
+  vSide = side;
+  vec4 pc = uVP * vec4(aRib.xy, aRib.z, 1.0);
+  /* 线宽在**屏幕空间**展开：每个顶点离中心线的距离严格等于「物理线宽 ×
+     当前缩放」的像素数，和镜头角度无关 —— 透视不再把远端拉细，缩放不变形。
+
+     展开方向：**本段切线在屏幕上的法线**，而不是「物理法线投影」。
+     以前用的是后者，毛病出在掠射角：平视看一面墙时，走线的物理法线几乎
+     垂直镜头，它的屏幕投影会缩成一条**沿着走线方向**的线 —— 带宽全摊到
+     了线的长度方向上，竖向几乎没有面积，于是整面墙变成一根根细如发丝的
+     横线（放大后层间还露出缝）。改用「投影后切线的法线」以后，任何角度
+     下带宽都垂直于走线本身，平视、俯视、侧看都一样粗。
+
+     拐点无缝：每个角点存**本段切线 + 另一侧那段切线**两个角度，两侧都
+     把这两条屏幕法线加起来取平均（p1 + p2 这个和与顺序无关），所以拐点
+     前后两段算出的展开方向是同一个方向 → 角点仍是同一个屏幕点，
+     既不缺口也不重叠。 */
+  vec2 t1 = scrDir(pc, aRib.w);
+  vec2 t2 = scrDir(pc, aNbrt);
+  vec2 p1 = vec2(-t1.y, t1.x);
+  vec2 p2 = dot(t2, t2) > 1e-12 ? vec2(-t2.y, t2.x) : p1;
+  vec2 sum = p1 + p2;
+  /* 1) 正常拐点：两条屏幕法线的平分线（和与顺序无关 → 拐点两侧同一个方向）
+     2) 180° 折返/一条切线投影成点：平分线退化成零 → 退回单侧法线；
+        带子是左右对称的，方向取反覆盖的区域一样，不会开口。
+     3) 都退化成零：兜底屏幕竖直，绝不让 normalize(0) 把整段吞掉。 */
+  vec2 dir = dot(sum, sum) > 1e-8 ? normalize(sum)
+           : (dot(p1, p1) > 1e-12 ? normalize(p1)
+           : (dot(p2, p2) > 1e-12 ? normalize(p2) : vec2(0.0, 1.0)));
+  float hwPx = clamp(hw * (uProj / max(abs(pc.w), 1e-4)), 0.6, uMaxHalfPx);
+  vEdgeK = clamp((hwPx - 0.6) / 1.6, 0.0, 1.0);
+  gl_Position = vec4(pc.xy + dir * (side * hwPx / uViewport) * pc.w, pc.z, pc.w);
+}`;
+
+const FS_LINE = `#version 300 es
+precision highp float;
+in vec3 vColor;
+in float vFade;
+in float vSide;
+in float vEdgeK;
+uniform vec3 uBg;
+uniform float uShade;
+uniform float uEdge;      // 横截面边缘压暗系数（明暗档位）
+out vec4 o;
+void main() {
+  if (vFade <= 0.0) discard;
+  // 细线兜底几何也给一点横截面明暗（中间亮、两侧暗），
+  // 否则整条线是一块纯色，叠在一起就没有层次，看着「糊」。
+  // 但线只有两三像素粗时，这层明暗会变成一条条断开的深色边，
+  // 反而不连续 —— 所以按线宽淡入（vEdgeK）。
+  float k = mix(1.0, uEdge + (1.0 - uEdge) * (1.0 - vSide * vSide), uShade * vEdgeK);
+  o = vec4(mix(uBg, min(vColor * k, vec3(1.0)), vFade), 1.0);   // 恒不透明
+}`;
+
+/* 体积管：每段一根六棱柱，半径 = 挤出宽度/2，两端带球冠把拐角缺口填掉 */
+const VS_TUBE = GLSL_HEAD + `
+in vec4 aTube;        // (a: 0/1 沿段位置, b: 端帽轴向偏移/r, cosθ, sinθ)
+out vec3 vCol;
+out vec3 vNrm;
+out vec3 vWpos;
+out float vZbot;      // 这一层的底面 z（层内高度比例用）
+void main() {
+  float fade = layer_fade(aZ);
+  if (fade <= 0.0 || type_hidden(aType)) {
+    vFade = 0.0; vCol = vec3(0.0); vNrm = vec3(0.0, 0.0, 1.0); vWpos = vec3(0.0);
+    gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+    return;
+  }
+  vFade = fade;
+  vCol = seg_color(aType);
+
+  vec3 p0 = vec3(aStart, aZ);
+  vec3 p1 = vec3(aEnd, aZ);
+  vec3 axis = p1 - p0;
+  float len = length(axis);
+  vec3 ax = len > 1e-6 ? axis / len : vec3(0.0, 0.0, 1.0);
+  vec3 helper = abs(ax.z) < 0.9 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0);
+  vec3 u0 = normalize(cross(ax, helper));
+  vec3 v0 = cross(ax, u0);
+  vec3 radial = u0 * aTube.z + v0 * aTube.w;
+  float b = aTube.y;                            // 端帽偏移，单位 = 半径
+  float rho = sqrt(max(0.0, 1.0 - b * b));      // 球面剖面
+  float r = 0.5 * line_width();
+  vec3 center = mix(p0, p1, aTube.x);
+  float halfH = 0.5 * max(uLayerH, 0.02);
+  center.z -= halfH;                            // gcode 的 Z 是这一层的顶面，丝体在它下面
+  vec3 pos = center + ax * (r * b) + radial * (r * rho);
+  /* 截面压扁成「宽 = 挤出线宽、高 = 层高」的椭圆：真实的挤出丝是扁的。
+     以前是正圆柱（直径 0.4+ mm），层高 0.16 时上下层互相插进去 60% 以上，
+     整摞糊成一块，看不出层 —— 压扁后每层正好占满自己的层高，
+     顶面亮、贴着下层的那面带接触阴影，层与层才分得开。 */
+  float squash = clamp(halfH / max(r, 1e-4), 0.10, 1.0);
+  pos.z = center.z + (pos.z - center.z) * squash;
+  gl_Position = uVP * vec4(pos, 1.0);
+  vec3 nrm = ax * b + radial * rho;
+  nrm.z /= max(squash, 0.05);                   // 椭圆法线：z 分量按 1/压扁比放大
+  vNrm = normalize(nrm);
+  vWpos = pos;
+  vZbot = center.z;                             // 层底（center 已下移半层高）
+}`;
+
+const FS_TUBE = `#version 300 es
+precision highp float;
+in vec3 vCol;
+in vec3 vNrm;
+in vec3 vWpos;
+in float vZbot;
+in float vFade;
+uniform vec3 uLight;     // 指向光源（世界空间，已归一）
+uniform vec3 uCam;
+uniform vec3 uBg;
+uniform float uLayerH;   // 层缝压暗要用当前层高
+/* 明暗档位（顶栏滑杆三档，见 SHADE_PRESETS）：
+   uSK = (本体色权重, 漫反射权重, 包裹光权重)
+   uAO = (朝下压暗的底, 幅度)
+   uSeam = 层缝压暗幅度 */
+uniform vec3 uSK;
+uniform vec2 uAO;
+uniform float uSeam;
+out vec4 o;
+void main() {
+  if (vFade <= 0.0) discard;
+  vec3 n = normalize(vNrm);
+  vec3 v = normalize(uCam - vWpos);
+  float ndl = dot(n, uLight);
+  float diff = max(ndl, 0.0);
+  float wrap = clamp(ndl * 0.5 + 0.5, 0.0, 1.0);      // 包裹式漫反射，背光不全黑
+  float ao = clamp(n.z * 0.5 + 0.5, 0.0, 1.0);        // 朝下压暗 → 层间接触阴影
+  vec3 h = normalize(uLight + v);
+  float spec = pow(max(dot(n, h), 0.0), 26.0) * 0.40;
+  float rim = pow(1.0 - max(dot(n, v), 0.0), 3.0) * 0.08;
+  /* 亮度分配：大部分是「本体色」，只留一小截随光变化。
+     漫反射权重给大了，侧面（法线水平、几乎拿不到主光）就掉到地板值 ——
+     俯视时视野里几乎全是丝的侧壁，整体发暗。Orca 的预览本来就是接近平涂
+     加轻微明暗，这样任何视角都不会因为朝向不同而整体变黑。
+     三档就是这条分配曲线的三个位置：平涂 / 标准 / 强明暗。 */
+  float shade = uSK.x + uSK.y * diff + uSK.z * wrap;
+  /* 朝上/朝下的亮度差保留一点：扁截面的顶面更亮、贴下层更暗，
+     每层有一道「上面亮、贴下层暗」的边，层界才看得出来。 */
+  vec3 c = vCol * shade * (uAO.x + uAO.y * ao) + vec3(spec) + vCol * rim;
+  /* 层缝：层底往上 35% 的范围内压暗 uSeam。
+     竖直外壁上所有层的侧法线一样，光照明暗完全一样 —— 不额外画层缝的话
+     一整面墙是一条纯色，0.16 层高看着就是「糊成一片」。
+     压暗幅度要小：预览整体亮度不能被它带偏，只是给层界一条暗边。 */
+  float tz = clamp((vWpos.z - vZbot) / max(uLayerH, 0.02), 0.0, 1.0);
+  c *= mix(1.0 - uSeam, 1.0, smoothstep(0.0, 0.35, tz));
+  o = vec4(mix(uBg, min(c, vec3(1.0)), vFade), 1.0);
+}`;
+
+function sh(type, src) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+    const log = gl.getShaderInfoLog(s);
+    console.error(log, src);
+    throw new Error(log || "shader compile failed");
+  }
+  return s;
+}
+
+const UN_NAMES = ["uVP", "uViewport", "uProj", "uLayerH", "uAreaOn", "uAreaStep",
+  "uWidthScale", "uMinHalfPx", "uMaxHalfPx", "uColors", "uColorMode", "uRowColor",
+  "uMode", "uZCur", "uZBot", "uHiddenMask", "uBg", "uLight", "uCam", "uShade",
+  "uVRange", "uRowCount",
+  "uSK", "uAO", "uSeam", "uEdge", "uJoin"];
+const AT_NAMES = ["corner", "tube", "start", "end", "z", "type", "area", "attr",
+                  "vact", "aeff", "nbP", "nbN", "rib", "hw", "nbrt"];
+
+function makeProg(vsSrc, fsSrc) {
+  const p = gl.createProgram();
+  gl.attachShader(p, sh(gl.VERTEX_SHADER, vsSrc));
+  gl.attachShader(p, sh(gl.FRAGMENT_SHADER, fsSrc));
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {
+    throw new Error(gl.getProgramInfoLog(p) || "link failed");
+  }
+  const a = {}, u = {};
+  for (const n of AT_NAMES) {
+    const l = gl.getAttribLocation(p, "a" + n[0].toUpperCase() + n.slice(1));
+    if (l >= 0) a[n] = l;
+  }
+  for (const n of UN_NAMES) {
+    const l = gl.getUniformLocation(p, n);
+    if (l) u[n] = l;
+  }
+  gl.useProgram(p);
+  const colors = new Float32Array(60);
+  PALETTE.forEach((c, i) => {
+    colors[i * 3] = c[0] / 255; colors[i * 3 + 1] = c[1] / 255; colors[i * 3 + 2] = c[2] / 255;
+  });
+  if (u.uColors) gl.uniform3fv(u.uColors, colors);
+  if (u.uBg) gl.uniform3f(u.uBg, BG[0], BG[1], BG[2]);
+  return { p, a, u };
+}
+
+let progFlat, progTube;
+let progRibbon;
+try {
+  progFlat = makeProg(VS_FLAT, FS_LINE);
+  progTube = makeProg(VS_TUBE, FS_TUBE);
+} catch (e) {
+  document.getElementById("toast").textContent = "着色器编译失败：" + e.message;
+  throw e;
+}
+/* 折线路径是可选的加速手段：万一某个驱动的 GLSL 编译器不认，就退回逐段四边形，
+   不能因为这一个着色器让整个预览白屏（drawToolpaths 里 progRibbon 为空时自动回退）。 */
+try {
+  progRibbon = makeProg(VS_RIBBON, FS_LINE);
+} catch (e) {
+  progRibbon = null;
+  console.warn("折线着色器编译失败，退回逐段四边形：", e && e.message);
+}
+
+/* 基础网格：unit quad（屏幕线）+ 两种圆柱（thin / 带球冠的 caps） */
+const cornerBuf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, cornerBuf);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+  0, -1, 1, -1, 0, 1,
+  1, -1, 1, 1, 0, 1,
+]), gl.STATIC_DRAW);
+
+const TUBE_SIDES = 8;            // 截面压扁后 6 边会看得出折面，8 边更接近真实丝形
+const TUBE_RINGS = {
+  thin: [[0, 0], [1, 0]],
+  caps: [[0, -1], [0, 0], [1, 0], [1, 1]],     // 4 环 → 48 三角/段（原来 6 环 30 个）
+};
+const tubeMeshes = {};
+for (const [name, rings] of Object.entries(TUBE_RINGS)) {
+  const K = TUBE_SIDES, verts = [], idx = [], row = K + 1;
+  for (const [a, b] of rings) {
+    for (let i = 0; i <= K; i++) {
+      const t = (i / K) * Math.PI * 2;
+      verts.push(a, b, Math.cos(t), Math.sin(t));
+    }
+  }
+  for (let g = 0; g < rings.length - 1; g++) {
+    for (let i = 0; i < K; i++) {
+      const a0 = g * row + i, b0 = a0 + 1, a1 = (g + 1) * row + i, b1 = a1 + 1;
+      idx.push(a0, a1, b0, b0, a1, b1);
+    }
+  }
+  const vb = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, vb);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(verts), gl.STATIC_DRAW);
+  const ib = gl.createBuffer();
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ib);
+  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(idx), gl.STATIC_DRAW);
+  tubeMeshes[name] = { vb, ib, count: idx.length };
+}
+
+/* 着色依据行色表：attrs 表每行一种颜色（≤几千行，改依据时重建一次） */
+let rowTex = null;
+const C_MISS = [128, 128, 128];
+function buildRowColorTex() {
+  const tbl = (index && index.attrs) || [];
+  const sch = SCHEMES[scheme];
+  const cont = sch && (sch.kind === "vact" || sch.kind === "aeff");
+  const n = cont ? 256 : Math.max(1, tbl.length);
+  const data = new Uint8Array(n * 4);
+  if (cont) {
+    // 连续量：整条渐变表，着色时按数值查行（比逐段查表省掉一张大表）
+    for (let i = 0; i < n; i++) {
+      const c = rampColor(i / (n - 1));
+      data[i * 4] = c[0]; data[i * 4 + 1] = c[1]; data[i * 4 + 2] = c[2]; data[i * 4 + 3] = 255;
+    }
+  } else {
+    for (let i = 0; i < tbl.length; i++) {
+      const c = (sch.kind !== "type" && sch.avail && sch.color)
+        ? sch.color(tbl[i][sch.k])
+        : C_MISS;
+      data[i * 4] = c[0]; data[i * 4 + 1] = c[1]; data[i * 4 + 2] = c[2]; data[i * 4 + 3] = 255;
+    }
+    if (!tbl.length) data.set([255, 255, 255, 255]);
+  }
+  scene.rowCount = n;
+  if (!rowTex) rowTex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, rowTex);
+  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, n, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, data);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.bindTexture(gl.TEXTURE_2D, null);
+}
+
+/* ---------------------------------------------------------------- 状态 */
+let index = null, jobId = null;
+const hidden = new Set();
+let cur = 0, mode = "single";
+let scheme = 0;               // 着色依据（SCHEMES 下标），0 = 走线类型
+let tubeMode = "off";         // 默认「线条」：细线最清楚；顶栏按钮可在 自动 / 体积 / 线条 间切
+let tier = "flat";            // 当前用的几何：flat | thin | caps
+let plate = { x0: 0, y0: 0, x1: 250, y1: 250, gridBuf: null, gridN: 0, unit: 10 };
+const cam = { az: -0.9, el: 0.62, dist: 300, target: [0, 0, 0] };
+let playing = false, playTimer = 0;
+let dpr = Math.min(devicePixelRatio || 1, 2);
+
+/* 预览数据：整份 segments.bin 一次流式取回，直接当实例缓冲用。
+   每层记录是定长的，所以「已下载的字节区间」就是「可画的实例区间」，
+   不需要逐层请求、逐层上传。 */
+const scene = {
+  buf: null, glbuf: null, zgl: null, zarr: null,
+  stride: 20, segs: 0, total: 0, bytes: 0, rowCount: 1, hasVact: false,
+  srcSpans: [],                   // 已下载的字节区间（源文件）
+  spans: [], ranges: [],          // 可画的字节区间 / 整层可画的字节区间
+  buf2: null,                     // v5 老任务：重排成「按段交错」用的中转缓冲
+  rpIdx: 0, rpEnd: 0,
+  hasArea: false, hasAttr: false,
+  abort: null, job: null,
+};
+/* v6 起 segments.bin 里每段 20 字节是按段交错的，整份文件可以直接当实例流用
+   （一条 draw call）。v5 及更早是「位置块/类型块/截面块/属性块」四段分开存，
+   下载到的层在客户端按层重排一次，渲染路径保持同一条。 */
+let layoutInterleaved = true;
+
+/* ---------------------------------------------------------------- 尺寸 */
+function resize() {
+  const w = cv.clientWidth, h = cv.clientHeight;
+  if (cv.width !== Math.floor(w * dpr) || cv.height !== Math.floor(h * dpr)) {
+    cv.width = Math.max(1, Math.floor(w * dpr));
+    cv.height = Math.max(1, Math.floor(h * dpr));
+  }
+  gl.viewport(0, 0, cv.width, cv.height);
+}
+
+/* ---------------------------------------------------------------- 底板 */
+function buildPlate(b) {
+  const pad = 12;
+  const cx = (b[0] + b[3]) / 2, cy = (b[1] + b[4]) / 2;
+  const xyMax = Math.max(b[3] - b[0], b[4] - b[1]);
+  const span = Math.max(xyMax, Math.min((b[5] - b[2]) * 0.8, xyMax * 1.6)) + pad * 2;
+  const step = span > 260 ? 20 : 10;
+  const side = Math.ceil(Math.max(span, 80) / step) * step;
+  const x0 = Math.round(cx - side / 2), y0 = Math.round(cy - side / 2);
+  plate = { x0, y0, x1: x0 + side, y1: y0 + side, step };
+
+  const seg = [];
+  const push = (ax, ay, bx, by, t) => seg.push(ax, ay, bx, by, t);
+  for (let x = x0; x <= x0 + side + 1e-6; x += step) push(x, y0, x, y0 + side, T_GRID);
+  for (let y = y0; y <= y0 + side + 1e-6; y += step) push(x0, y, x0 + side, y, T_GRID);
+  push(x0, y0, x0 + side, y0, T_BORDER);
+  push(x0 + side, y0, x0 + side, y0 + side, T_BORDER);
+  push(x0 + side, y0 + side, x0, y0 + side, T_BORDER);
+  push(x0, y0 + side, x0, y0, T_BORDER);
+  const L = Math.min(step * 3, side / 3);
+  push(x0, y0, x0 + L, y0, T_AXX);
+  push(x0, y0, x0, y0 + L, T_AXY);
+
+  const n = seg.length / 5;
+  const pos = new Float32Array(n * 4), typ = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    pos[i * 4] = seg[i * 5]; pos[i * 4 + 1] = seg[i * 5 + 1];
+    pos[i * 4 + 2] = seg[i * 5 + 2]; pos[i * 4 + 3] = seg[i * 5 + 3];
+    typ[i] = seg[i * 5 + 4];
+  }
+  if (plate.gridBuf) gl.deleteBuffer(plate.gridBuf);
+  if (plate.gridTypeBuf) gl.deleteBuffer(plate.gridTypeBuf);
+  const pb = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, pb);
+  gl.bufferData(gl.ARRAY_BUFFER, pos, gl.STATIC_DRAW);
+  const tb = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, tb);
+  gl.bufferData(gl.ARRAY_BUFFER, typ, gl.STATIC_DRAW);
+  plate.gridBuf = pb; plate.gridTypeBuf = tb; plate.gridN = n;
+
+  cam.target = [cx, cy, (b[2] + b[5]) / 2];
+  const diag = Math.hypot(b[3] - b[0], b[4] - b[1], b[5] - b[2]);
+  cam.dist = Math.max(diag * 1.85, 75);
+}
+
+/* ---------------------------------------------------------------- 载入 */
+function toast(msg) {
+  const t = document.getElementById("toast");
+  t.textContent = msg; t.classList.add("show");
+  setTimeout(() => t.classList.remove("show"), 3200);
+}
+
+async function loadJob(id) {
+  if (scene.abort) { try { scene.abort.abort(); } catch (e) { } scene.abort = null; }
+  jobId = id;
+  scene.job = null;
+  hintEl.textContent = "载入中…";
+  let idx;
+  try {
+    const r = await fetch(`/jobs/${id}/preview`);
+    if (!r.ok) {
+      let m = "HTTP " + r.status;
+      try { m = (await r.json()).detail || m; } catch (e) { }
+      hintEl.textContent = m;
+      return;
+    }
+    idx = await r.json();
+  } catch (e) {
+    hintEl.textContent = "取预览失败：" + e.message;
+    return;
+  }
+  index = idx;
+  hidden.clear();
+  // 每段字节数 = bin 总长 / 段数（v5=20, v4=18, v3=17），据此判断有哪些字段
+  const segs = index.segment_count | 0;
+  const stride = segs > 0 ? Math.round((index.bin_bytes || 0) / segs) : 20;
+  scene.stride = stride >= 17 ? stride : 20;
+  layoutInterleaved = (index.version | 0) >= 6;
+  scene.segs = segs;
+  scene.hasArea = scene.stride >= 18;
+  scene.hasAttr = scene.stride >= 20;
+  scene.hasVact = scene.stride >= 24;
+  prepareSchemes();
+  if (SCHEMES[scheme] && SCHEMES[scheme].kind !== "type" && !SCHEMES[scheme].avail) scheme = 0;
+  buildRowColorTex();
+  fillSchemeSelect();
+  buildPlate(index.bbox);
+  cur = Math.max(0, index.layer_count - 1);
+  buildLegend();
+  buildSlider();
+  document.getElementById("title").textContent =
+    `${index.layer_count} 层 · ${(segs / 1000).toFixed(0)}k 段` +
+    (index.totals ? ` · ${fmtDur(index.totals.time_s)} · ${index.totals.grams} g` : "");
+  updateHud();
+  requestDraw();
+  await loadBin();
+}
+
+/* 流式拉整份 segments.bin：边下边画，最后一块到齐就是一次 draw call */
+async function loadBin() {
+  for (const b of [scene.glbuf, scene.zgl, scene.nbBuf]) if (b) gl.deleteBuffer(b);
+  scene.glbuf = null; scene.zgl = null; scene.nbBuf = null; scene.nb = null;
+  scene.srcSpans = []; scene.spans = []; scene.ranges = []; scene.bytes = 0;
+  scene.rpIdx = 0; scene.rpEnd = 0;
+  scene.buf = null; scene.buf2 = null; scene.zarr = null;
+  ribbonKey = ""; ribbonN = 0; ribbonLen = 0; ribbonSkip.clear();  // 换任务：折线几何全部作废
+  if (!scene.segs) { hintEl.textContent = ""; return; }
+  scene.total = index.bin_bytes || scene.segs * scene.stride;
+  scene.buf = new ArrayBuffer(scene.total);
+  if (!layoutInterleaved) scene.buf2 = new ArrayBuffer(scene.total);
+
+  // z 属性：每段一个 float，index 里已经有每层的 z，不必等数据
+  scene.zarr = new Float32Array(scene.segs);
+  for (const ly of index.layers) {
+    const n = ly.count | 0;
+    const off = Math.round(ly.offset / scene.stride);
+    if (n > 0 && off >= 0 && off + n <= scene.segs) scene.zarr.fill(ly.z, off, off + n);
+  }
+  scene.zgl = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, scene.zgl);
+  gl.bufferData(gl.ARRAY_BUFFER, scene.zarr, gl.STATIC_DRAW);
+  scene.glbuf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, scene.glbuf);
+  // 尾部多留 64 字节：读「后一段」时最多越出 16 字节，落在填充区就是全 0，
+  // 着色器判定长度退化后自动退回方头端帽，不会真的越界。
+  gl.bufferData(gl.ARRAY_BUFFER, scene.total + 64, gl.DYNAMIC_DRAW);
+  const ctl = new AbortController();
+  scene.abort = ctl;
+  let r;
+  try {
+    // ?v=布局版本：v6 改成按段交错后，老浏览器缓存里的 v5 平面分组字节
+    // 会被当成交错记录读，整层都成乱码。URL 带上版本号就不会命中文档缓存。
+    r = await fetch(`/jobs/${jobId}/preview/bin?v=${index.version | 0}`, { signal: ctl.signal });
+  } catch (e) {
+    if (e.name !== "AbortError") hintEl.textContent = "取预览失败：" + e.message;
+    return;
+  }
+  if (!r.ok) { hintEl.textContent = "取预览失败：HTTP " + r.status; return; }
+  const u8 = new Uint8Array(scene.buf);
+  const total = scene.total;
+  const reader = r.body.getReader();
+  let off = 0, lastHint = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done || !value) break;
+      const n = Math.min(value.length, total - off);
+      if (n <= 0) break;
+      u8.set(value.subarray(0, n), off);
+      if (layoutInterleaved) {
+        // 文件里就是交错布局：整块直接上 GPU，不做任何 CPU 侧处理
+        gl.bindBuffer(gl.ARRAY_BUFFER, scene.glbuf);
+        gl.bufferSubData(gl.ARRAY_BUFFER, off, value.subarray(0, n));
+      }
+      off += n;
+      scene.bytes = off;
+      addSpan(0, off);
+      const now = performance.now();
+      if (now - lastHint > 120) {
+        lastHint = now;
+        hintEl.textContent = `载入预览 ${(off / 1048576).toFixed(1)} / ${(total / 1048576).toFixed(1)} MB`;
+        requestDraw();
+      }
+    }
+  } catch (e) {
+    if (e.name !== "AbortError") hintEl.textContent = "下载中断：" + e.message;
+    return;
+  }
+  if (off >= total) {
+    hintEl.textContent = "";
+    window.__ready = true;
+  }
+  requestDraw();
+}
+
+/* 已下载区间：相邻合并；再折算成「整层可用」的字节区间（半截层不画） */
+function addSpan(a, b) {
+  const s = scene.srcSpans;
+  if (s.length && s[s.length - 1][1] === a) s[s.length - 1][1] = b;
+  else s.push([a, b]);
+  if (layoutInterleaved) {
+    scene.spans = s.map(x => [x[0], x[1]]);
+  } else {
+    repackV5();               // v5：重排完的层才能画
+  }
+  recomputeRanges();
+}
+
+/* v5 老任务：把每层「16n 位置 + n 类型 + n 截面 + 2n 属性」重排成
+   每段 20 字节交错，写进 buf2 并上传。已重排到的层才会被画出来。 */
+function repackV5() {
+  const L = (index && index.layers) || [];
+  const st = scene.stride;
+  for (; scene.rpIdx < L.length; scene.rpIdx++) {
+    const ly = L[scene.rpIdx];
+    const n = ly.count | 0;
+    const b0 = ly.offset, b1 = b0 + n * st;
+    if (n > 0 && !inSpans(b0, b1)) break;      // 数据还没到齐
+    if (n > 0) repackLayerV5(ly, n);
+    scene.rpEnd = b1;
+  }
+  scene.spans = scene.rpEnd > 0 ? [[0, scene.rpEnd]] : [];
+}
+
+function repackLayerV5(ly, n) {
+  const base = ly.offset;
+  const src = new Uint8Array(scene.buf);
+  const dst = new Uint8Array(scene.buf2);
+  const sf = new Float32Array(scene.buf);
+  const df = new Float32Array(scene.buf2);
+  const p0 = base / 4;                 // 位置块：16 字节/段
+  const tOff = base + n * 16;
+  const aOff = tOff + n;
+  const vOff = aOff + n;
+  for (let i = 0; i < n; i++) {
+    const d = p0 + i * 5;              // 目标：5 float/段
+    const s = p0 + i * 4;
+    df[d] = sf[s]; df[d + 1] = sf[s + 1]; df[d + 2] = sf[s + 2]; df[d + 3] = sf[s + 3];
+    const b = base + i * 20;
+    dst[b + 16] = src[tOff + i];
+    dst[b + 17] = src[aOff + i];
+    dst[b + 18] = src[vOff + i * 2];
+    dst[b + 19] = src[vOff + i * 2 + 1];
+  }
+  gl.bindBuffer(gl.ARRAY_BUFFER, scene.glbuf);
+  gl.bufferSubData(gl.ARRAY_BUFFER, base, new Uint8Array(scene.buf2, base, n * 20));
+}
+
+function inSpans(b0, b1) {
+  for (const [s0, s1] of scene.srcSpans) if (b0 >= s0 && b1 <= s1) return true;
+  return false;
+}
+
+function recomputeRanges() {
+  const L = (index && index.layers) || [];
+  const st = scene.stride;
+  const out = [];
+  let rs = -1, re = -1;
+  for (let i = 0; i < L.length; i++) {
+    const ly = L[i];
+    const n = ly.count | 0;
+    const b0 = ly.offset, b1 = ly.offset + n * st;
+    if (n > 0 && inSpans(b0, b1) && (!layoutInterleaved && b1 <= scene.rpEnd || layoutInterleaved)) {
+      if (rs < 0) { rs = b0; re = b1; }
+      else if (b0 === re) re = b1;
+      else { out.push([rs, re]); rs = b0; re = b1; }
+    } else if (rs >= 0) { out.push([rs, re]); rs = -1; }
+  }
+  if (rs >= 0) out.push([rs, re]);
+  scene.ranges = out;
+}
+
+/* ---------------------------------------------------------------- 着色依据 */
+/* 载入任务后把每个属性列的准备好：取值集合、分类/渐变模式、取色函数 */
+function prepareSchemes() {
+  const tbl = (index && index.attrs) || [];
+  const avail = (index && index.attr_avail) || {};
+  for (const sch of SCHEMES) {
+    if (sch.kind === "type") continue;
+    if (sch.kind === "vact" || sch.kind === "aeff") {
+      // 连续量：整段数据不在 attrs 表里，范围由 index.attr_ranges 给
+      const r = ((index && index.attr_ranges) || {})[sch.id] || [0, 0];
+      sch.min = +r[0] || 0;
+      sch.max = +r[1] || 0;
+      sch.levels = [];
+      sch.avail = avail[sch.id] !== false && sch.max > sch.min && !!scene.hasVact;
+      sch.mode = sch.avail ? "ramp" : "flat";
+      sch.color = t => rampColor(Math.max(0, Math.min(1, t)));
+      continue;
+    }
+    const seen = new Map();
+    for (const a of tbl) seen.set(a[sch.k], true);
+    const vals = [...seen.keys()].sort((a, b) => a - b);
+    sch.levels = vals;
+    sch.min = vals.length ? vals[0] : 0;
+    sch.max = vals.length ? vals[vals.length - 1] : 0;
+    sch.avail = avail[sch.id] !== false && vals.length > 0 && tbl.length > 0;
+    if (vals.length <= 1) {
+      sch.mode = "flat";
+      sch.color = () => FLAT_COLOR;
+    } else if (vals.length <= 6) {
+      sch.mode = "cat";
+      const m = new Map(vals.map((v, i) => [v, CAT_COLORS[i % CAT_COLORS.length]]));
+      sch.color = v => m.get(v) || C_MISS;
+    } else {
+      sch.mode = "ramp";
+      const lo = sch.min, hi = sch.max;
+      sch.color = v => rampColor((v - lo) / (hi - lo || 1));
+    }
+  }
+}
+
+/* ---------------------------------------------------------------- 绘制 */
+const U = {
+  f1: (loc, v) => { if (loc) gl.uniform1f(loc, v); },
+  i1: (loc, v) => { if (loc) gl.uniform1i(loc, v); },
+  v3: (loc, a) => { if (loc) gl.uniform3f(loc, a[0], a[1], a[2]); },
+  v2: (loc, a) => { if (loc) gl.uniform2f(loc, a[0], a[1]); },
+};
+
+/* 明暗三档：顶栏滑杆切，值越小越平涂越亮，越大立体感越强但侧面越暗 */
+const SHADE_PRESETS = [
+  { name: "平涂", sk: [0.92, 0.05, 0.03], ao: [0.95, 0.05], seam: 0.10, edge: 0.92 },
+  { name: "标准", sk: [0.84, 0.14, 0.04], ao: [0.90, 0.10], seam: 0.15, edge: 0.84 },
+  { name: "强明暗", sk: [0.68, 0.30, 0.08], ao: [0.78, 0.22], seam: 0.24, edge: 0.68 },
+];
+let shadeLevel = 2;          // 默认「强明暗」
+try {
+  const v = parseInt(localStorage.getItem("viewer.shade"), 10);
+  if (v >= 0 && v < SHADE_PRESETS.length) shadeLevel = v;
+} catch (e) { /* 隐私模式没有 localStorage */ }
+function applyShadeStyle(u) {
+  const p = SHADE_PRESETS[shadeLevel] || SHADE_PRESETS[1];
+  U.v3(u.uSK, p.sk);
+  U.v2(u.uAO, p.ao);
+  U.f1(u.uSeam, p.seam);
+  U.f1(u.uEdge, p.edge);
+}
+
+/* 每段实例属性（除 aCorner/aTube 之外）——整份数据一条缓冲，只改偏移 */
+function setAttr(loc, size, type, stride, offset) {
+  if (loc === undefined) return;
+  gl.enableVertexAttribArray(loc);
+  gl.vertexAttribPointer(loc, size, type, false, stride, offset);
+  gl.vertexAttribDivisor(loc, 1);
+}
+
+const JOIN_ATTRS = ["nbP", "nbN"];
+function disableJoin(A) {
+  for (const k of JOIN_ATTRS) if (A[k] !== undefined) gl.disableVertexAttribArray(A[k]);
+}
+
+/* 拐点角点：预览缓冲是按层、按路径顺序排的，同层里所有段共用一条缓冲，
+   所以这里按坐标把「上一段的终点 == 本段起点」接起来，把每个拐点的
+   两侧角点偏移一次算好，存成 8 个 float/段（0 = 没有相邻段）：
+
+       [0..1] 上一拐点的 o+   [2..3] 上一拐点的 o-      ← 本段作为「后一段」
+       [4..5] 下一拐点的 o+   [6..7] 下一拐点的 o-      ← 本段作为「前一段」
+
+   单位是 mm（世界 XY），着色器只做 mm→视口单位再投影 —— 两边读到同一组
+   数字，角点在屏幕上是同一个点：不缺口、也不重叠。
+
+   **只在同一层内接**：竖壁上「这层最后一笔的终点」和「下一层第一笔的起点」
+   常常是同一个 XY，跨层接起来方向就错了（转角会按层间那条线去斜接）。
+   层与层之间本来也不该连 —— 它们是上下关系，不是同一条走线。
+
+   量化到 0.001 mm 做 key。实测 20.7 万段 ~90 ms、37.9 万段 ~370 ms，
+   一次算完，之后每帧只读属性。 */
+const NB_FLOATS = 8;             // 每段：上一拐点 (o+, o-)、下一拐点 (o+, o-)，各 2 float（mm）
+function ensureNeighbors() {
+  if (scene.nbBuf || !scene.buf || scene.bytes < scene.total) return;
+  const t0 = performance.now();
+  const st = scene.stride, per = st >> 2;
+  const src = layoutInterleaved ? scene.buf : scene.buf2;
+  if (!src) return;
+  const f = new Float32Array(src);
+  const u8 = new Uint8Array(src);
+  const n = Math.floor(scene.total / st);
+  if (!n) return;
+  const q = (v) => Math.round(v * 1000) + 100000;   // 0.001 mm 量化；+10 万让负坐标也安全
+  const key = (x, y) => q(x) * 1000000 + q(y);
+  const nb = new Float32Array(n * NB_FLOATS);
+  /* 段宽（mm）：必须和着色器 width_of() 逐字一致 */
+  const lh = new Float32Array(n);
+  const wOf = (i) => {
+    if (!scene.hasArea) return 0.45;
+    const a = u8[i * st + 17];
+    return Math.min(1.60, Math.max(0.10,
+      a * (((index && index.area_step) || 0.002)) / Math.max(lh[i], 0.02) * WIDTH_SCALE));
+  };
+  /* 拐点表：按「前一段 i」下标存。一遍扫完，三遍收尾（扫、截断、写）。
+       jpx/jpy = 角平分线方向 × hw·Lm   （k=1 时的角点偏移）
+       je      = 该角点沿前一段方向的进退量（有符号，k=1 时）
+       jk      = 截断系数：碎段上把角点沿角平分线等比回缩，防止四边形翻领结 */
+  const jEnd = new Int32Array(n).fill(-1);
+  const jPrev = new Int32Array(n).fill(-1);
+  const jpx = new Float32Array(n), jpy = new Float32Array(n);
+  const je = new Float32Array(n), jk = new Float32Array(n).fill(1);
+  const lenS = new Float32Array(n);
+  const byStart = new Map();
+  const L = (index && index.layers) || [];
+  let nJoint = 0, nSkip = 0;
+
+  /* ---- 1. 建拐点 ---- */
+  for (let li = 0; li < L.length; li++) {
+    const ly = L[li];
+    const c = ly.count | 0;
+    if (!c) continue;
+    const i0 = Math.round(ly.offset / st), i1 = Math.min(i0 + c, n);
+    const h = li ? Math.max(ly.z - L[li - 1].z, 0.02) : Math.max(ly.z, 0.02);
+    for (let i = i0; i < i1; i++) lh[i] = h;
+    byStart.clear();
+    for (let i = i0; i < i1; i++) {
+      const o = i * per;
+      const k0 = key(f[o], f[o + 1]);
+      if (!byStart.has(k0)) byStart.set(k0, i);
+    }
+    for (let i = i0; i < i1; i++) {
+      const o = i * per;
+      const ax = f[o + 2] - f[o], ay = f[o + 3] - f[o + 1];
+      const la = Math.hypot(ax, ay);
+      lenS[i] = la;
+      if (!(la > 1e-6)) continue;
+      const j = byStart.get(key(f[o + 2], f[o + 3]));
+      if (j === undefined || j === i) continue;
+      const p = j * per;
+      const bx = f[p + 2] - f[p], by = f[p + 3] - f[p + 1];
+      const lb = Math.hypot(bx, by);
+      if (!(lb > 1e-6)) continue;
+      const dax = ax / la, day = ay / la;
+      const dbx = bx / lb, dby = by / lb;
+      /* 斜接 = 两条偏移边的交点：角平分线方向上，长度 hw·√(2/(1+cosθ))。 */
+      const nIx = -day, nIy = dax, nOx = -dby, nOy = dbx;
+      const cth = Math.max(-1, Math.min(1, nIx * nOx + nIy * nOy));
+      const bl = Math.sqrt(2 / Math.max(1 + cth, 1e-6));
+      let sx = nIx + nOx, sy = nIy + nOy;
+      const sl = Math.hypot(sx, sy);
+      if (sl <= 0.05) { nSkip++; continue; }        // ≈180° 折返：算不出交点，方头
+      sx /= sl; sy /= sl;
+      const kb = 0.5 * (wOf(i) + wOf(j)) * Math.min(bl, MITER_LIMIT);
+      jpx[i] = sx * kb; jpy[i] = sy * kb;
+      je[i] = kb * (sx * dax + sy * day);
+      jEnd[i] = j; jPrev[j] = i;
+      nJoint++;
+    }
+  }
+
+  /* ---- 2. 截断：四边形不许翻、也不许缩成尖角 ----
+     一条边在段内的两端沿段坐标是 sp（起点拐点给的进退）和 len + ep（终点
+     拐点给的）。三条约束：
+       ① |sp| ≤ 0.9·len   —— 起点角点别越过本段大半个身子（否则四边形塌成尖角）
+       ② |ep| ≤ 0.9·len   —— 同理
+       ③ |sp − ep| ≤ 0.98·len —— 两侧长边不许交叉（真翻面）
+     ① ② 才是「正常拐角不吃亏」的关键：普通 90° 拐角 sp≈hw、段长 2×线宽时
+     0.9·len 根本碰不到；以前按 0.45·len 卡，把完全正常的拐角也削窄了。
+     每次只收紧一个拐点，收到刚好为止（最小改动）；收缩单调，只会让相邻段
+     更宽松，几遍就收敛。 */
+  for (let pass = 0; pass < 3; pass++) {
+    let changed = 0;
+    for (let i = 0; i < n; i++) {
+      const p = jPrev[i], j = jEnd[i];
+      if (p < 0 && j < 0) continue;
+      const len = lenS[i];
+      if (!(len > 1e-6)) continue;
+      const hw = 0.5 * wOf(i);
+      const cap = 0.9 * len, lim = 0.98 * len;
+      let sp = p >= 0 ? -je[p] * jk[p] : -hw;
+      let ep = j >= 0 ? je[i] * jk[i] : hw;
+      if (p >= 0 && Math.abs(sp) > cap) {
+        jk[p] = Math.max(0.02, jk[p] * (cap / Math.abs(sp)));
+        sp = -je[p] * jk[p];
+        changed++;
+      }
+      if (j >= 0 && Math.abs(ep) > cap) {
+        jk[i] = Math.max(0.02, jk[i] * (cap / Math.abs(ep)));
+        ep = je[i] * jk[i];
+        changed++;
+      }
+      const d = sp - ep;
+      if (Math.abs(d) > lim) {
+        const sg = d > 0 ? 1 : -1;
+        if (p >= 0 && (j < 0 || Math.abs(sp) >= Math.abs(ep))) {
+          if (Math.abs(sp) > 1e-9)
+            jk[p] = Math.min(jk[p], Math.max(0.02, jk[p] * ((ep + sg * lim) / sp)));
+        } else if (j >= 0 && Math.abs(ep) > 1e-9) {
+          jk[i] = Math.min(jk[i], Math.max(0.02, jk[i] * ((sp - sg * lim) / ep)));
+        }
+        changed++;
+      }
+    }
+    if (!changed) break;
+  }
+
+  /* ---- 3. 写角点 ----
+     每个拐点只写一次，前一段的「退出端点」和后一段的「进入端点」读到的是
+     同一组 float → 屏幕上同一个点：不缺口、不重叠。 */
+  for (let i = 0; i < n; i++) {
+    const j = jEnd[i];
+    if (j < 0) continue;
+    const k = jk[i];
+    const px = jpx[i] * k, py = jpy[i] * k;
+    const b1 = i * NB_FLOATS, b2 = j * NB_FLOATS;
+    nb[b1 + 4] = px; nb[b1 + 5] = py;
+    nb[b1 + 6] = -px; nb[b1 + 7] = -py;
+    nb[b2] = px; nb[b2 + 1] = py;
+    nb[b2 + 2] = -px; nb[b2 + 3] = -py;
+  }
+  scene.nb = nb;
+  scene.nbBuf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, scene.nbBuf);
+  gl.bufferData(gl.ARRAY_BUFFER, nb, gl.STATIC_DRAW);
+  /* 统计：接上多少拐点、多少个折返退成方头、截断系数分布（调试用） */
+  const hist = [0, 0, 0, 0];        // k<0.3 / <0.6 / <0.9 / ≥0.9
+  let kmin = 1, pinchLong = 0, pinchLongMax = 0;
+  for (let i = 0; i < n; i++) {
+    const j = jEnd[i];
+    if (j < 0) continue;
+    const k = jk[i];
+    if (k < kmin) kmin = k;
+    hist[k < 0.3 ? 0 : k < 0.6 ? 1 : k < 0.9 ? 2 : 3]++;
+    /* 「掐腰」只出现在碎段上才无所谓：掐腰长度 < 0.2 mm 时在正常缩放下
+       不到一个像素。统计一下有没有长段也被掐的（那才是真问题）。 */
+    if (k < 0.5) {
+      const len = Math.min(lenS[i], lenS[j]);
+      if (len > pinchLongMax) pinchLongMax = len;
+      if (len > 0.2) pinchLong++;
+    }
+  }
+  /* 掐腰到底出现在多长的段上：短段（<0.2 mm）在正常缩放下不到一个像素，
+     而且相邻段的身体会盖住它；只有长段被掐才是真的看得见。 */
+  const lenHist = [0, 0, 0, 0, 0];   // <0.1 / <0.2 / <0.4 / <0.8 / ≥0.8
+  for (let i = 0; i < n; i++) {
+    const j = jEnd[i];
+    if (j < 0 || jk[i] >= 0.3) continue;
+    const len = Math.min(lenS[i], lenS[j]);
+    lenHist[len < 0.1 ? 0 : len < 0.2 ? 1 : len < 0.4 ? 2 : len < 0.8 ? 3 : 4]++;
+  }
+  scene.nbStat = { joints: nJoint, butt: nSkip, kmin: +kmin.toFixed(3),
+                   kHist: hist, pinchLong, pinchLongMax: +pinchLongMax.toFixed(2),
+                   lenHistShort: lenHist, ms: Math.round(performance.now() - t0) };
+}
+
+/* ------------------------------------------------------- 折线组装 / 三角带几何 */
+/* 为什么不再「逐段画四边形」
+   ---------------------------------
+   逐段四边形在两种情况下一定碎：
+   ① 段长比线宽还短（弧线上极常见，实测某任务 57% 的段 < 0.45 mm 线宽）：
+      斜接长度算出来比段长还长，只能被 `0.9·段长` 截断 → 每个关节都掐一次腰，
+      墙看起来就是一串珠子（实测 31% 的关节可视长度 < 半线宽）；
+   ② 缩得很小时一段只有零点几像素：一个四边形常常整个落在像素中心之外，
+      直接被光栅化器丢掉 → 看起来就是一串虚线。
+
+   这里改成 Orca / SimplyPrint 的做法：*先组装成折线，再画折线*。
+     · 同一条走线 = 同层 + 同类型 + 首尾严格相接（上一段终点 == 下一段起点）；
+     · 折线内部做「微小点合并 + 形状保真」简化：点距 < step 且弦偏差 ≤ tol
+       且转角 < 25° 才合并 —— 段变长变少，斜接不再被截断；
+     · 每个角点在 CPU 上算一次偏移，前一段的出口和后一段的入口用同一个
+       float → 屏幕上就是同一个点：不缺口、不重叠、不掐腰；
+     · 整条折线一次写进同一条顶点缓冲，一次 draw call。
+
+   step = max(1.15×线宽, 1.6px)；tol = 0.6px。远看自动合并得多（连续长线），
+   近看保留细节（偏差不到一个像素）。线宽另有 1.25px 保底，避免亚像素消失。 */
+/* 折线几何按段建。以前 30 万段以上一律退回逐段四边形（碎线/掐腰就是那么来的）；
+   现在超量时先提高合并力度（coarse）再建，所以门槛可以放宽到 70 万段，
+   累积视角那种 40~50 万段的任务也能走连续折线。 */
+const RIBBON_SEG_BUDGET = 700000;
+const RIB_VERT_CAP = 9e5;          // 顶点上限（≈32 MB），再大就退回实例化，省手机内存
+const RIB_FLOATS = 10;             // x y z tSelf | type attr vact aeff | hw | tNbr
+const RIB_BYTES = RIB_FLOATS * 4;
+const RIB_MIN_PX = 1.25;           // 线宽下限（设备像素），再细就成虚线了
+let ribbonVbo = null, ribbonN = 0, ribbonKey = "", ribbonArr = null, ribbonLen = 0;
+const ribbonSkip = new Set();      // 建过一次发现太大的 key，别每帧重试
+
+/* 简化：返回要保留的点下标（首尾必留）。px/py 长度 n+1，段数 n。 */
+function simplifyPath(px, py, n, step, tol) {
+  const keep = [0];
+  let i = 0;
+  while (i < n) {
+    let j = i + 1;
+    let ax = px[j] - px[i], ay = py[j] - py[i];
+    let len = Math.hypot(ax, ay);
+    while (j < n) {
+      const nx = px[j + 1] - px[i], ny = py[j + 1] - py[i];
+      const nl = Math.hypot(nx, ny);
+      if (!(nl > 1e-9)) break;
+      if (nl > step * 2.2) break;                       // 一段别拉太长（保属性粒度）
+      const ex = px[j] - px[i], ey = py[j] - py[i];
+      const perp = Math.abs(ex * ny - ey * nx) / nl;    // 被吞的点到弦的垂距
+      if (perp > tol) break;                            // 形状会走样 → 保留
+      if ((ax * nx + ay * ny) / ((len || 1e-9) * nl) < 0.90) break;  // 转角 >25° → 保留
+      j++; ax = nx; ay = ny; len = nl;
+    }
+    keep.push(j);
+    i = j;
+  }
+  return keep;
+}
+
+/* 按当前可见字节区间组装折线并生成三角带顶点。返回顶点数。 */
+function buildRibbons(loB, hiB, ppm, coarse) {
+  coarse = coarse || 1;
+  const L = (index && index.layers) || [];
+  const st = scene.stride, per = st >> 2;
+  const src = layoutInterleaved ? scene.buf : scene.buf2;
+  ribbonLen = 0;
+  if (!src) return 0;
+  const f = new Float32Array(src), u8 = new Uint8Array(src);
+  const nSeg = Math.floor(scene.total / st);
+  const areaStep = (index && index.area_step) || 0.002;
+  const minHalf = 0.5 * RIB_MIN_PX / Math.max(ppm, 1e-4);   // 像素下限换成 mm
+
+  let cap = 1 << 16, out = new Float32Array(cap), o = 0;
+  const need = k => {
+    if (o + k <= cap) return;
+    while (cap < o + k) cap *= 2;
+    const n2 = new Float32Array(cap);
+    n2.set(out.subarray(0, o));
+    out = n2;
+  };
+  /* 顶点 = 中心点(x,y,z) + 本段切线角度 + 另一侧切线角度 + ±半线宽。
+     线宽与展开方向都在着色器里按屏幕空间算（见 VS_RIBBON 的注释）；
+     CPU 只负责把「几何上角点两侧是谁」告诉它，两个角度在拐点两侧成对
+     出现，所以角点在屏幕上必然是同一个点。 */
+  const vtx = (x, y, z, tSelf, tNbr, side, hw, ty, at, va, ae) => {
+    need(RIB_FLOATS);
+    out[o] = x; out[o + 1] = y; out[o + 2] = z; out[o + 3] = tSelf;
+    out[o + 4] = ty; out[o + 5] = at; out[o + 6] = va; out[o + 7] = ae;
+    out[o + 8] = side * hw; out[o + 9] = tNbr;
+    o += RIB_FLOATS;
+  };
+
+  /* 一条折线的缓存（跨 run 复用，避免每层新建一堆小数组） */
+  const px = [], py = [], plen = [], phw = [], pty = [], pat = [], pva = [], pae = [];
+  let runType = -1, z = 0;
+
+  const flush = () => {
+    const n = plen.length;
+    if (n <= 0) return;
+    /* 收尾：拆完这条折线立刻清空缓存，下一段重新攒点 */
+    const clearRun = () => {
+      px.length = py.length = plen.length = phw.length = 0;
+      pty.length = pat.length = pva.length = pae.length = 0;
+    };
+    if (n === 1) {                     // 孤立一段：两头方头，别丢
+      const x0 = px[0], y0 = py[0], x1 = px[1], y1 = py[1];
+      const hw = phw[0];
+      const l = Math.hypot(x1 - x0, y1 - y0) || 1;
+      const ang = Math.atan2((y1 - y0) / l, (x1 - x0) / l);   // 切线（另一侧 = 自己）
+      vtx(x0, y0, z, ang, ang, 1, hw, pty[0], pat[0], pva[0], pae[0]);
+      vtx(x0, y0, z, ang, ang, -1, hw, pty[0], pat[0], pva[0], pae[0]);
+      vtx(x1, y1, z, ang, ang, 1, hw, pty[0], pat[0], pva[0], pae[0]);
+      vtx(x1, y1, z, ang, ang, 1, hw, pty[0], pat[0], pva[0], pae[0]);
+      vtx(x0, y0, z, ang, ang, -1, hw, pty[0], pat[0], pva[0], pae[0]);
+      vtx(x1, y1, z, ang, ang, -1, hw, pty[0], pat[0], pva[0], pae[0]);
+      clearRun();
+      return;
+    }
+    /* 是不是闭环（首尾同点）：闭环的接缝也要做斜接，不能留方头 */
+    const closed = n > 2 &&
+      Math.abs(px[0] - px[n]) < 1e-5 && Math.abs(py[0] - py[n]) < 1e-5;
+    let hwMax = 0;
+    for (let t = 0; t < n; t++) if (phw[t] > hwMax) hwMax = phw[t];
+    /* coarse：全模型一览时把相邻小段并成一条（顶点数直接除以 coarse），
+       否则 26 万段要 160 万顶点，超上限就只能退回逐段四边形 —— 那正是
+       「碎线/掐腰」的来源。合并点仍受转角(>25°)和垂距约束，形状不变。 */
+    const step = coarse * Math.max(1.15 * hwMax * 2, 1.6 / Math.max(ppm, 1e-4));
+    const tol = Math.max(0.01, 0.6 / Math.max(ppm, 1e-4));
+    const keep = closed ? simplifyPath(px, py, n, step, tol).slice(0, -1)
+                        : simplifyPath(px, py, n, step, tol);
+    const m = keep.length;
+    if (m < 2) { clearRun(); return; }
+
+    /* ---- 每段的朝向 / 线宽 / 颜色 ---- */
+    const nPiece = closed ? m : m - 1;
+    const dirX = new Float32Array(nPiece), dirY = new Float32Array(nPiece);
+    const phwP = new Float32Array(nPiece), rep = new Int32Array(nPiece);
+    const plenP = new Float32Array(nPiece);
+    for (let k = 0; k < nPiece; k++) {
+      const i0 = keep[k], i1 = (k + 1 < m) ? keep[k + 1] : n;
+      let bi = i0, bl = -1;
+      for (let t = i0; t < i1; t++) if (plen[t] > bl) { bl = plen[t]; bi = t; }
+      rep[k] = bi;
+      phwP[k] = Math.max(phw[bi], minHalf);
+      const dx = px[i1] - px[i0], dy = py[i1] - py[i0];
+      const l = Math.hypot(dx, dy) || 1e-6;
+      dirX[k] = dx / l; dirY[k] = dy / l;
+      plenP[k] = l;
+    }
+
+    /* ---- 角点的两条切线：一条折线就是一条「等宽带子」 ----
+       每个角点存「从它出发那段的切线」和「到它结束那段的切线」两个角度。
+       拐点前后两段读到的**是同一对数**（只是角色对调），而着色器把两条
+       切线的屏幕法线相加取平均 —— 加法与顺序无关，所以两侧算出的展开
+       方向完全一致：角点在屏幕上是同一个点，不缺口也不重叠。
+
+       刻意不再用「世界坐标的斜接长度 sec(θ/2)」：线宽现在完全由屏幕空间
+       决定，乘不乘斜接只是「圆角 vs 尖角」的区别，在 1~3 px 的线宽下看不
+       出来；而保留它反而会破坏等宽（尖角比线宽还长）。 */
+    const cSelf = new Float32Array(m), cNbr = new Float32Array(m);
+    const cHw = new Float32Array(m);
+    const pTan = new Float32Array(nPiece);
+    for (let k = 0; k < nPiece; k++) pTan[k] = Math.atan2(dirY[k], dirX[k]);
+    for (let k = 0; k < m; k++) {
+      const pk = closed ? (k - 1 + nPiece) % nPiece : (k > 0 ? k - 1 : -1);   // 入段
+      const qk = closed ? k % nPiece : (k < m - 1 && k < nPiece ? k : -1);    // 出段
+      cSelf[k] = qk >= 0 ? pTan[qk] : (pk >= 0 ? pTan[pk] : 0);
+      cNbr[k] = pk >= 0 ? pTan[pk] : cSelf[k];
+      cHw[k] = (pk >= 0 && qk >= 0) ? 0.5 * (phwP[pk] + phwP[qk])
+            : phwP[pk >= 0 ? pk : (qk >= 0 ? qk : 0)];
+    }
+
+    /* ---- 发出几何：每段一个四边形 ----
+       颜色/属性取该段覆盖的原始段里最长的那条，速度/加速度着色仍然逐段精确。 */
+    for (let k = 0; k < nPiece; k++) {
+      const ia = keep[k];
+      const ib = closed ? keep[(k + 1) % m] : keep[k + 1];
+      const kb = closed ? (k + 1) % m : k + 1;
+      const bi = rep[k];
+      const ty = pty[bi], at = pat[bi], va = pva[bi], ae = pae[bi];
+      const x0 = px[ia], y0 = py[ia], x1 = px[ib], y1 = py[ib];
+      const a0 = cSelf[k], an0 = cNbr[k], h0 = cHw[k];
+      const a1 = cSelf[kb], an1 = cNbr[kb], h1 = cHw[kb];
+      vtx(x0, y0, z, a0, an0, 1, h0, ty, at, va, ae);
+      vtx(x0, y0, z, a0, an0, -1, h0, ty, at, va, ae);
+      vtx(x1, y1, z, a1, an1, 1, h1, ty, at, va, ae);
+      vtx(x1, y1, z, a1, an1, 1, h1, ty, at, va, ae);
+      vtx(x0, y0, z, a0, an0, -1, h0, ty, at, va, ae);
+      vtx(x1, y1, z, a1, an1, -1, h1, ty, at, va, ae);
+    }
+    clearRun();
+  };
+
+  for (let li = 0; li < L.length; li++) {
+    const ly = L[li];
+    const cnt = ly.count | 0;
+    if (!cnt) continue;
+    const b0 = ly.offset, b1 = b0 + cnt * st;
+    if (b1 <= loB || b0 >= hiB) continue;
+    z = +ly.z || 0;
+    const h = Math.max(layerHeight(li), 0.02);
+    const i0 = Math.round(b0 / st), i1 = Math.min(i0 + cnt, nSeg);
+    px.length = py.length = plen.length = phw.length = 0;
+    pty.length = pat.length = pva.length = pae.length = 0;
+    runType = -1;
+    for (let i = i0; i < i1; i++) {
+      const q = i * per;
+      const x0 = f[q], y0 = f[q + 1], x1 = f[q + 2], y1 = f[q + 3];
+      const ty = u8[i * st + 16];
+      const area = scene.hasArea ? u8[i * st + 17] : 45;
+      const at = scene.hasAttr ? (u8[i * st + 18] | (u8[i * st + 19] << 8)) : 0;
+      const va = scene.hasVact ? (u8[i * st + 20] | (u8[i * st + 21] << 8)) : 0;
+      const ae = scene.hasVact ? (u8[i * st + 22] | (u8[i * st + 23] << 8)) : 0;
+      const w = scene.hasArea
+        ? Math.min(1.60, Math.max(0.10, area * areaStep / h * WIDTH_SCALE))
+        : LINE_MM;
+      /* 折线切分：类型变了、或者和上一段不相接（G0 / 空移 / 回抽 / 换层）
+         —— 一律开启新折线，绝不跨着画 */
+      const lx = px.length ? px[px.length - 1] : 0;
+      const ly2 = py.length ? py[py.length - 1] : 0;
+      if (px.length && (ty !== runType ||
+          Math.abs(lx - x0) > 1e-5 || Math.abs(ly2 - y0) > 1e-5)) flush();
+      if (!px.length) { px.push(x0); py.push(y0); runType = ty; }
+      px.push(x1); py.push(y1);
+      plen.push(Math.hypot(x1 - x0, y1 - y0));
+      phw.push(0.5 * w);
+      pty.push(ty); pat.push(at); pva.push(va); pae.push(ae);
+    }
+    flush();
+  }
+
+  ribbonArr = out;
+  ribbonLen = o;
+  return o / RIB_FLOATS;
+}
+
+function setAttrV(loc, size, stride, offset) {
+  if (loc === undefined) return;
+  gl.enableVertexAttribArray(loc);
+  gl.vertexAttribPointer(loc, size, gl.FLOAT, false, stride, offset);
+  gl.vertexAttribDivisor(loc, 0);
+}
+
+function drawRibbons(vp, proj, h, ppm) {
+  if (!scene.buf) return false;
+  const [loB, hiB] = visibleByteRange();
+  const zq = Math.round(Math.log2(Math.max(ppm, 1e-4)) * 3);
+  const key = `${loB}:${hiB}:${zq}:${scene.stride}:${index.version | 0}`;
+  if (key !== ribbonKey) {
+    if (ribbonSkip.has(key)) return false;      // 上次就判定太大，直接走实例化
+    /* 先按可见段数估一次顶点量（实测 ≈6.4 顶点/段），超上限就提高合并力度
+       再来，而不是直接退回逐段四边形 —— 折线必须保持连续。 */
+    const vis = visibleSegs() || 1;
+    const est = vis * 6.4;
+    let coarse = est > RIB_VERT_CAP ? Math.max(2, Math.ceil(est / RIB_VERT_CAP)) : 1;
+    const n = buildRibbons(loB, hiB, ppm, coarse);
+    window.__rib = { est, coarse, vis, n };
+    if (n > RIB_VERT_CAP) {                     // 太大 → 放弃，交给实例化路径
+      ribbonSkip.add(key);
+      if (ribbonSkip.size > 64) ribbonSkip.clear();
+      /* 关键：不要把失败的 key 记成当前 key。否则下一帧 key === ribbonKey，
+         跳过重建、ribbonN 又是 0，直接 return true 却一个顶点都不画 ——
+         累积/全模型视角整屏空白（实测就是「图中看不到走线」）。 */
+      ribbonKey = "";
+      ribbonN = 0; ribbonLen = 0;
+      return false;
+    }
+    ribbonKey = key;
+    ribbonN = n;
+    if (n > 0) {
+      if (!ribbonVbo) ribbonVbo = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, ribbonVbo);
+      gl.bufferData(gl.ARRAY_BUFFER, ribbonArr.subarray(0, ribbonLen), gl.DYNAMIC_DRAW);
+    }
+  }
+  /* 建出来是空的（该区间没有可见段）也交回实例化路径：那里同样画不出东西，
+     但至少不会把「空」当成「已画过」而让后续帧全空。 */
+  if (ribbonN <= 0) return false;
+  const pr = progRibbon, A = pr.a;
+  setCommon(pr, vp, proj, h);
+  gl.bindBuffer(gl.ARRAY_BUFFER, ribbonVbo);
+  setAttrV(A.rib, 4, RIB_BYTES, 0);
+  if (A.type !== undefined) setAttrV(A.type, 1, RIB_BYTES, 16);
+  if (A.attr !== undefined) setAttrV(A.attr, 1, RIB_BYTES, 20);
+  if (A.vact !== undefined) setAttrV(A.vact, 1, RIB_BYTES, 24);
+  if (A.aeff !== undefined) setAttrV(A.aeff, 1, RIB_BYTES, 28);
+  if (A.hw !== undefined) setAttrV(A.hw, 1, RIB_BYTES, 32);
+  if (A.nbrt !== undefined) setAttrV(A.nbrt, 1, RIB_BYTES, 36);
+  if (A.area !== undefined) { gl.disableVertexAttribArray(A.area); gl.vertexAttrib1f(A.area, 45); }
+  if (A.z !== undefined) { gl.disableVertexAttribArray(A.z); gl.vertexAttrib1f(A.z, 0); }
+  disableJoin(A);
+  gl.drawArrays(gl.TRIANGLES, 0, ribbonN);
+  window.__ribbon = { n: ribbonN, key };
+  return true;
+}
+
+function bindSeg(pr, b0, join) {
+  const st = scene.stride, A = pr.a;
+  gl.bindBuffer(gl.ARRAY_BUFFER, scene.glbuf);
+  setAttr(A.start, 2, gl.FLOAT, st, b0);
+  setAttr(A.end, 2, gl.FLOAT, st, b0 + 8);
+  setAttr(A.type, 1, gl.UNSIGNED_BYTE, st, b0 + 16);
+  if (A.area !== undefined) {
+    if (scene.hasArea) setAttr(A.area, 1, gl.UNSIGNED_BYTE, st, b0 + 17);
+    else { gl.disableVertexAttribArray(A.area); gl.vertexAttrib1f(A.area, 45); }
+  }
+  if (A.attr !== undefined) {
+    if (scene.hasAttr) setAttr(A.attr, 1, gl.UNSIGNED_SHORT, st, b0 + 18);
+    else { gl.disableVertexAttribArray(A.attr); gl.vertexAttrib1f(A.attr, 0); }
+  }
+  if (A.vact !== undefined) {
+    if (scene.hasVact) {
+      setAttr(A.vact, 1, gl.UNSIGNED_SHORT, st, b0 + 20);
+      setAttr(A.aeff, 1, gl.UNSIGNED_SHORT, st, b0 + 22);
+    } else {
+      gl.disableVertexAttribArray(A.vact); gl.vertexAttrib1f(A.vact, 0);
+      if (A.aeff !== undefined) {
+        gl.disableVertexAttribArray(A.aeff); gl.vertexAttrib1f(A.aeff, 0);
+      }
+    }
+  }
+  gl.bindBuffer(gl.ARRAY_BUFFER, scene.zgl);
+  setAttr(A.z, 1, gl.FLOAT, 4, (b0 / st) * 4);
+  /* 拐点角点偏移（mm）：CPU 侧按坐标把段首尾接起来算好，同一个拐点只算
+     一次、两侧写同一组数，存在 scene.nbBuf（每段 8 个 float）。
+     上不了就退回方头端帽。 */
+  if (A.nbP !== undefined) {
+    if (join && scene.nbBuf) {
+      const nbStride = NB_FLOATS * 4, nbOff = (b0 / st) * nbStride;
+      gl.bindBuffer(gl.ARRAY_BUFFER, scene.nbBuf);
+      setAttr(A.nbP, 4, gl.FLOAT, nbStride, nbOff);
+      if (A.nbN !== undefined) setAttr(A.nbN, 4, gl.FLOAT, nbStride, nbOff + 16);
+    } else {
+      disableJoin(A);
+    }
+  }
+}
+
+function setCommon(pr, vp, proj, h) {
+  const u = pr.u;
+  gl.useProgram(pr.p);
+  gl.uniformMatrix4fv(u.uVP, false, vp);
+  if (u.uViewport) gl.uniform2f(u.uViewport, cv.width / 2, cv.height / 2);
+  U.f1(u.uProj, proj);
+  U.f1(u.uLayerH, h);
+  U.f1(u.uAreaOn, scene.hasArea && index.area_step ? 1 : 0);
+  U.f1(u.uAreaStep, (index && index.area_step) || 0.002);
+  U.f1(u.uWidthScale, WIDTH_SCALE);
+  U.f1(u.uMinHalfPx, MIN_HALF_PX * dpr);
+  U.f1(u.uMaxHalfPx, MAX_HALF_PX * dpr);
+  const schX = SCHEMES[scheme] || SCHEMES[0];
+  U.i1(u.uColorMode, !scheme ? 0
+    : schX.kind === "vact" ? 2 : schX.kind === "aeff" ? 3 : 1);
+  U.i1(u.uRowCount, scene.rowCount || 1);
+  if (u.uVRange) gl.uniform2f(u.uVRange, schX.min || 0, schX.max || 0);
+  U.i1(u.uMode, mode === "all" ? 2 : mode === "accum" ? 1 : 0);
+  U.f1(u.uZCur, index.layers[cur] ? +index.layers[cur].z : 0);
+  U.f1(u.uZBot, index.layers.length ? +index.layers[0].z : 0);
+  let mask = 0;
+  if (!scheme) for (const t of hidden) if (t < 31) mask |= 1 << t;
+  U.i1(u.uHiddenMask, mask);
+  U.f1(u.uShade, 1);
+  applyShadeStyle(u);
+  if (u.uRowColor) {
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, rowTex);
+    gl.uniform1i(u.uRowColor, 0);
+  }
+}
+
+function drawPlate(vp, proj) {
+  if (!plate.gridN) return;
+  const pr = progFlat, A = pr.a;
+  setCommon(pr, vp, proj, 0.2);
+  U.i1(pr.u.uMode, 2);          // 底板永远全显
+  U.i1(pr.u.uColorMode, 0);     // 底板网格按类型上色，不跟着色依据走
+  U.f1(pr.u.uAreaOn, 0);
+  U.f1(pr.u.uShade, 0);         // 底板网格是纯色线，不做横截面明暗
+  U.f1(pr.u.uMinHalfPx, 0.55 * dpr);
+  U.f1(pr.u.uJoin, 0);          // 底板网格是各自的独立线段，不做拐点拼接
+  disableJoin(A);
+  gl.bindBuffer(gl.ARRAY_BUFFER, cornerBuf);
+  if (A.corner !== undefined) {
+    gl.enableVertexAttribArray(A.corner);
+    gl.vertexAttribPointer(A.corner, 2, gl.FLOAT, false, 0, 0);
+    gl.vertexAttribDivisor(A.corner, 0);
+  }
+  gl.bindBuffer(gl.ARRAY_BUFFER, plate.gridBuf);
+  setAttr(A.start, 2, gl.FLOAT, 16, 0);
+  setAttr(A.end, 2, gl.FLOAT, 16, 8);
+  gl.bindBuffer(gl.ARRAY_BUFFER, plate.gridTypeBuf);
+  setAttr(A.type, 1, gl.FLOAT, 4, 0);
+  if (A.z !== undefined) { gl.disableVertexAttribArray(A.z); gl.vertexAttrib1f(A.z, 0); }
+  if (A.area !== undefined) { gl.disableVertexAttribArray(A.area); gl.vertexAttrib1f(A.area, 45); }
+  if (A.attr !== undefined) { gl.disableVertexAttribArray(A.attr); gl.vertexAttrib1f(A.attr, 0); }
+  gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, plate.gridN);
+}
+
+function bindCorner(pr) {  const A = pr.a;
+  gl.bindBuffer(gl.ARRAY_BUFFER, cornerBuf);
+  if (A.corner !== undefined) {
+    gl.enableVertexAttribArray(A.corner);
+    gl.vertexAttribPointer(A.corner, 2, gl.FLOAT, false, 0, 0);
+    gl.vertexAttribDivisor(A.corner, 0);
+  }
+}
+
+/* 当前模式下真正要画的字节区间（按层对齐）。以前不管什么模式都把整份实例流
+   丢给 GPU、靠顶点着色器丢弃，50 万段的任务在「单层」视图里也要跑 50 万个实例；
+   现在只提交需要的那几层。 */
+function visibleByteRange() {
+  const L = (index && index.layers) || [];
+  if (!L.length || mode === "all") return [0, Number.MAX_SAFE_INTEGER];
+  const st = scene.stride;
+  let from = 0;
+  if (mode === "single") from = Math.max(0, cur - 2);
+  const a = L[from] ? L[from].offset : 0;
+  const c = L[cur];
+  const b = c ? c.offset + (c.count | 0) * st : a;
+  return [a, Math.max(a, b)];
+}
+
+function drawToolpaths(vp, proj, eye, h) {
+  if (!scene.glbuf || !scene.ranges.length) return;
+  const [loB, hiB] = visibleByteRange();
+  let verts = 0, draws = 0;
+  if (tier === "flat") {
+    /* 首选「折线三角带」：段与段共用角点，不会出现掐腰/碎点。
+       段数太多（整模型一览）时退回实例化四边形，那条路径只为省内存。 */
+    const ppm = proj / Math.max(cam.dist, 1e-3);
+    const vis = visibleSegs();
+    if (progRibbon && vis > 0 && vis <= RIBBON_SEG_BUDGET && drawRibbons(vp, proj, h, ppm)) {
+      verts += ribbonN; draws++;
+    } else {
+      const pr = progFlat;
+      setCommon(pr, vp, proj, h);
+      bindCorner(pr);
+      const join = joinOn;
+      U.f1(pr.u.uJoin, join ? 1 : 0);
+      for (const [rb0, rb1] of scene.ranges) {
+        const b0 = Math.max(rb0, loB), b1 = Math.min(rb1, hiB);
+        const cnt = Math.floor((b1 - b0) / scene.stride);
+        if (cnt <= 0) continue;
+        bindSeg(pr, b0, join);
+        gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, cnt);
+        verts += 6 * cnt; draws++;
+      }
+    }
+  } else {
+    const pr = progTube;
+    const mesh = tubeMeshes[tier === "caps" ? "caps" : "thin"];
+    setCommon(pr, vp, proj, h);
+    // 光随相机走：右上前方的主光 + 轻微补光，转到哪面都能看出圆柱的弧度
+    const f = [cam.target[0] - eye[0], cam.target[1] - eye[1], cam.target[2] - eye[2]];
+    const fl = Math.hypot(f[0], f[1], f[2]) || 1;
+    const fx = f[0] / fl, fy = f[1] / fl, fz = f[2] / fl;
+    const rx = -Math.sin(cam.az), ry = Math.cos(cam.az), rz = 0;
+    const ux = -Math.sin(cam.el) * Math.cos(cam.az), uy = -Math.sin(cam.el) * Math.sin(cam.az),
+          uz = Math.cos(cam.el);
+    let lx = rx * 0.42 - fx * 0.55 + ux * 0.78;
+    let ly2 = ry * 0.42 - fy * 0.55 + uy * 0.78;
+    let lz = rz * 0.42 - fz * 0.55 + uz * 0.78;
+    const ll = Math.hypot(lx, ly2, lz) || 1;
+    gl.uniform3f(pr.u.uLight, lx / ll, ly2 / ll, lz / ll);
+    if (pr.u.uCam) gl.uniform3f(pr.u.uCam, eye[0], eye[1], eye[2]);
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, mesh.vb);
+    if (pr.a.tube !== undefined) {
+      gl.enableVertexAttribArray(pr.a.tube);
+      gl.vertexAttribPointer(pr.a.tube, 4, gl.FLOAT, false, 0, 0);
+      gl.vertexAttribDivisor(pr.a.tube, 0);
+    }
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, mesh.ib);
+    for (const [rb0, rb1] of scene.ranges) {
+      const b0 = Math.max(rb0, loB), b1 = Math.min(rb1, hiB);
+      const cnt = Math.floor((b1 - b0) / scene.stride);
+      if (cnt <= 0) continue;
+      bindSeg(pr, b0, false);
+      gl.drawElementsInstanced(gl.TRIANGLES, mesh.count, gl.UNSIGNED_SHORT, 0, cnt);
+      verts += mesh.count * cnt; draws++;
+    }
+  }
+  return { verts, draws };
+}
+
+/* 当前模式下真正会被画的段数（单层 3 层、累积到当前层、全部） */
+function visibleSegs() {
+  const ls = (index && index.layers) || [];
+  if (!ls.length) return 0;
+  if (mode === "all") return scene.segs;
+  let from = 0;
+  if (mode === "single") from = Math.max(0, cur - 2);
+  let n = 0;
+  for (let i = from; i <= cur && i < ls.length; i++) n += ls[i].count || 0;
+  return n;
+}
+
+/* 视角相关的选择：太细的线不值得走体积管（三角形数翻 6 倍），
+   带滞回避免缩放时来回跳。Orca 里也是「屏幕线 / 管」两套几何。 */
+function pickTier(wpx) {
+  const vis = Math.min(visibleSegs() || scene.segs || 1, scene.segs || 1);
+  const capsOk = vis <= CAPS_SEG_BUDGET;
+  const tubeOk = vis <= TUBE_SEG_BUDGET;
+  if (tubeMode === "off") { tier = "flat"; return tier; }
+  if (tubeMode === "on") {
+    tier = (capsOk && wpx >= CAPS_MIN_PX) ? "caps" : "thin";
+    return tier;
+  }
+  if (tier === "flat") {
+    if (wpx > 2.3 && tubeOk) tier = (capsOk && wpx > CAPS_MIN_PX * 1.15) ? "caps" : "thin";
+  } else if (tier === "thin") {
+    if (wpx < 1.9 || !tubeOk) tier = "flat";
+    else if (capsOk && wpx > CAPS_MIN_PX * 1.15) tier = "caps";
+  } else {
+    if (!capsOk || wpx < CAPS_MIN_PX) tier = wpx < 1.9 ? "flat" : "thin";
+  }
+  return tier;
+}
+
+/* 相机到场景包围盒的最近/最远距离 → 紧致 near/far。
+   以前 near = dist*0.02、far = dist*20（比值 1000），16 位深度缓冲上
+   层与层、面与面深度相等就会闪；紧致视锥把精度全用在模型上。 */
+function depthRange(eye) {
+  const b = index.bbox;
+  const x0 = Math.min(b[0], plate.x0), x1 = Math.max(b[3], plate.x1);
+  const y0 = Math.min(b[1], plate.y0), y1 = Math.max(b[4], plate.y1);
+  const z0 = Math.min(0, b[2]), z1 = b[5];
+  let dmin = Infinity, dmax = 0;
+  for (let i = 0; i < 8; i++) {
+    const x = (i & 1) ? x1 : x0, y = (i & 2) ? y1 : y0, z = (i & 4) ? z1 : z0;
+    const d = Math.hypot(x - eye[0], y - eye[1], z - eye[2]);
+    if (d < dmin) dmin = d;
+    if (d > dmax) dmax = d;
+  }
+  const near = Math.max(0.05, dmin * 0.55);
+  const far = Math.max(near * 2, dmax * 1.12 + 2);
+  return [near, far];
+}
+
+let joinOn = false;             // 本次绘制是否做拐点斜接（见 draw()）
+const JOIN_SEG_BUDGET = 80000;  // 打开斜接的段数上限
+let rafPending = false;
+function requestDraw() {
+  if (rafPending) return;
+  rafPending = true;
+  requestAnimationFrame(() => { rafPending = false; draw(); });
+}
+
+function draw() {
+  const t0 = performance.now();
+  resize();
+  gl.clearColor(BG[0], BG[1], BG[2], 1);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  if (!index) return;
+
+  gl.enable(gl.DEPTH_TEST);
+  gl.depthFunc(gl.LESS);          // 不透明：等深度不再重复绘制，结果确定
+  gl.enable(gl.CULL_FACE);        // 圆柱是封闭的，背面剔掉省一半填充
+  gl.cullFace(gl.BACK);
+  gl.frontFace(gl.CCW);
+
+  const eye = [
+    cam.target[0] + cam.dist * Math.cos(cam.el) * Math.cos(cam.az),
+    cam.target[1] + cam.dist * Math.cos(cam.el) * Math.sin(cam.az),
+    cam.target[2] + cam.dist * Math.sin(cam.el),
+  ];
+  const [near, far] = depthRange(eye);
+  const proj = M4.perspective(FOVY, cv.width / cv.height, near, far);
+  const viewMat = M4.lookAt(eye, cam.target, [0, 0, 1]);
+  const vp = M4.mul(proj, viewMat);
+
+  // 底板：半透明、不写深度
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+  gl.depthMask(false);
+  gl.disable(gl.CULL_FACE);
+  drawPlate(vp, (cv.height / 2) / Math.tan(FOVY / 2));
+  gl.depthMask(true);
+  gl.disable(gl.BLEND);
+
+  const projPx = (cv.height / 2) / Math.tan(FOVY / 2);
+  const wpx = (projPx / Math.max(cam.dist, 1e-3)) * LINE_MM;
+  if (!scene.glbuf) { requestDraw(); return; }
+  pickTier(wpx);
+  /* 拐点斜接只在「线够粗、段数够少」时开：细线时那点角度差根本看不见，
+     全模型一览几十万段时少读 4 个邻接属性更划算。 */
+  joinOn = tier === "flat" && wpx >= 1.8 && visibleSegs() <= JOIN_SEG_BUDGET;
+  if (joinOn) ensureNeighbors();
+  if (tier !== "flat") {
+    gl.enable(gl.CULL_FACE);
+    gl.cullFace(gl.BACK);
+  } else {
+    gl.disable(gl.CULL_FACE);     // 屏幕线是单面四边形
+  }
+  const st = drawToolpaths(vp, projPx, eye, layerHeight(cur)) || { verts: 0, draws: 0 };
+  window.__stats = {
+    tier, draws: st.draws, verts: st.verts, ranges: scene.ranges.length,
+    segs: scene.segs, bytes: scene.bytes, total: scene.total,
+    ms: +(performance.now() - t0).toFixed(2),
+  };
+  drawnLayerCount = 0;
+}
+
+/* 这一层的层高：用相邻层的 Z 差（首层用上一层的差），异常值兜底 0.2 */
+function layerHeight(i) {
+  const ls = (index && index.layers) || [];
+  const z = j => (ls[j] ? +ls[j].z || 0 : null);
+  const a = z(i);
+  let b = z(i - 1);
+  if (b === null) b = z(i + 1);
+  const h = (a === null || b === null) ? 0 : Math.abs(a - b);
+  return h > 0.01 && h < 1.5 ? h : 0.2;
+}
+
+/* ---------------------------------------------------------------- HUD */
+function fmtDur(s) {
+  if (!s) return "—";
+  s = Math.round(s);
+  const h = Math.floor(s / 3600), m = Math.round((s % 3600) / 60);
+  if (h) return `${h}h ${String(m).padStart(2, "0")}m`;
+  if (m) return `${m}m ${s % 60}s`;
+  return `${s}s`;
+}
+function fmtLen(mm) {
+  return mm >= 1000 ? (mm / 1000).toFixed(1) + " m" : Math.round(mm) + " mm";
+}
+let drawnLayerCount = 0;
+
+function updateHud() {
+  if (!index) return;
+  const ly = index.layers[cur] || {};
+  document.getElementById("bLayer").textContent = `${cur + 1} / ${index.layer_count}`;
+  document.getElementById("bZ").textContent = (+ly.z).toFixed(2) + " mm";
+  /* 顶层常常是「只有移动没有挤出」的一层，t=0 —— 以前被当成缺数据写成
+     「—」，界面上看着像没加载完。有这层就照实写 0 s。 */
+  document.getElementById("bLT").textContent =
+    ly.z === undefined ? "—" : `${Math.round(ly.t || 0)} s · ${Math.round(ly.fil || 0)} mm`;
+  document.getElementById("bT").textContent = fmtDur(index.totals && index.totals.time_s);
+  document.getElementById("bF").textContent =
+    index.totals ? fmtLen(index.totals.filament_mm) + " · " + index.totals.grams.toFixed(1) + " g" : "—";
+  document.getElementById("layerz").textContent = `${cur + 1}`;
+  const hasAll = index.totals && index.totals.time_source === "estimated";
+  document.getElementById("bT").title = hasAll ? "按路径长度估算" : "";
+}
+
+/* ---------------------------------------------------------------- 图例 */
+function buildLegend() {
+  const tbl = document.getElementById("lgtbl");
+  const bar = document.getElementById("lgbar");
+  const sum = document.getElementById("lgsum");
+  tbl.innerHTML = "";
+  bar.innerHTML = "";
+  bar.classList.remove("on");
+  const sch = SCHEMES[scheme];
+  document.getElementById("lgnote").textContent = sch.note || "";
+
+  if (sch.kind === "type") {
+    const labels = index.type_labels || index.type_names;
+    const rows = [];
+    const tl = index.type_lengths || {};
+    const tt = index.totals || { mm: 1, filament_mm: 0, grams: 0, time_s: 0 };
+    const tot = tt.mm || 1;
+    for (let t = 0; t < ROLE_COLORS.length; t++) {
+      const len = tl[String(t)] || 0;
+      if (!len) continue;
+      const c = ROLE_COLORS[t];
+      const g = (tt.grams || 0) * len / tot;
+      rows.push(`<tr class="row" data-t="${t}">
+        <td><span class="sw" style="background:rgb(${c[0]},${c[1]},${c[2]})"><span></span></span>${labels[t]}</td>
+        <td class="n">${(len / 1000).toFixed(1)}m</td>
+        <td class="n">${g.toFixed(1)}g</td></tr>`);
+    }
+    tbl.innerHTML = rows.join("");
+    sum.textContent = `${(tot / 1000).toFixed(1)}m / ${(tt.grams || 0).toFixed(1)}g`;
+    tbl.querySelectorAll("tr.row").forEach(tr => {
+      tr.addEventListener("click", () => {
+        const t = +tr.dataset.t;
+        if (hidden.has(t)) hidden.delete(t); else hidden.add(t);
+        tr.classList.toggle("off", hidden.has(t));
+        requestDraw();
+      });
+    });
+    return;
+  }
+
+  sum.textContent = "";
+  if (!sch.avail) {
+    tbl.innerHTML = `<tr><td class="n">该模型没有这类数据</td></tr>`;
+    return;
+  }
+  if (sch.mode === "flat") {
+    tbl.innerHTML = `<tr><td><span class="sw" style="background:${rgbCss(sch.color(sch.min))}">
+      </span>全模型 ${sch.fmt(sch.min)}${sch.unit}</td></tr>`;
+    return;
+  }
+  if (sch.mode === "cat") {
+    tbl.innerHTML = sch.levels.map(v =>
+      `<tr><td><span class="sw" style="background:${rgbCss(sch.color(v))}">
+       </span>${sch.fmt(v)}${sch.unit}</td></tr>`).join("");
+    return;
+  }
+  // 连续量：竖色带 + 刻度（低值在底，与 OrcaSlicer 一致）
+  const lo = sch.min, hi = sch.max;
+  const stops = RAMP_STOPS.map((c, i) => {
+    const t = i / (RAMP_STOPS.length - 1);
+    return `${rgbCss(c)} ${(t * 100).toFixed(1)}%`;
+  }).join(",");
+  const ticks = [];
+  for (let i = 4; i >= 0; i--) {
+    const v = lo + (hi - lo) * i / 4;
+    ticks.push(`<span>${i === 4 ? `<em>${sch.fmt(v)}</em>` : sch.fmt(v)}</span>`);
+  }
+  bar.classList.add("on");
+  bar.innerHTML = `<div class="ramp" style="background:linear-gradient(to top,${stops})"></div>
+    <div class="ticks">${ticks.join("")}</div>
+    <div class="note">${sch.unit || ""}</div>`;
+}
+
+/* ---------------------------------------------------------------- 层滑块 */
+const lsCv = document.getElementById("layerslider");
+const lsCtx = lsCv.getContext("2d");
+function buildSlider() {
+  const r = lsCv.getBoundingClientRect();
+  lsCv.width = Math.round(r.width * dpr);
+  lsCv.height = Math.round(Math.max(r.height, 40) * dpr);
+  renderSlider();
+}
+function renderSlider() {
+  if (!index || !lsCv.width) return;
+  const w = lsCv.width, h = lsCv.height;
+  lsCtx.clearRect(0, 0, w, h);
+  const n = index.layer_count;
+  // 每层用时柱状图（Orca/Prusa 的层高条）
+  let tmax = 0;
+  for (const ly of index.layers) tmax = Math.max(tmax, ly.t || 0);
+  const barW = Math.max(1, w * 0.5), x0 = (w - barW) / 2;
+  for (let i = 0; i < n; i++) {
+    const frac = tmax ? (index.layers[i].t || 0) / tmax : 0.2;
+    const yTop = h - (i + 1) / n * h;
+    const hh = Math.max(1, h / n);
+    lsCtx.fillStyle = "rgba(35,169,242,.55)";
+    lsCtx.fillRect(x0, yTop, Math.max(1, barW * frac), hh);
+  }
+  // 当前层指示
+  const y = h - (cur + 1) / n * h + h / n / 2;
+  lsCtx.strokeStyle = "#ffffff";
+  lsCtx.lineWidth = Math.max(2, w * 0.08);
+  lsCtx.beginPath(); lsCtx.moveTo(0, y); lsCtx.lineTo(w, y); lsCtx.stroke();
+  lsCtx.fillStyle = "#23a9f2";
+  lsCtx.fillRect(w * 0.72, y - h / n, w * 0.28, Math.max(2, h / n * 2));
+}
+
+function sliderScrub(clientY) {
+  if (!index) return;
+  const r = lsCv.getBoundingClientRect();
+  const frac = 1 - (clientY - r.top) / r.height;
+  const i = Math.max(0, Math.min(index.layer_count - 1, Math.round(frac * index.layer_count - 0.5)));
+  if (i !== cur) setLayer(i);
+}
+function setLayer(i) {
+  cur = i;
+  updateHud(); renderSlider(); requestDraw();
+}
+
+let lsDrag = false;
+lsCv.addEventListener("pointerdown", e => { lsDrag = true; try { lsCv.setPointerCapture(e.pointerId); } catch (err) {} sliderScrub(e.clientY); });
+lsCv.addEventListener("pointermove", e => { if (lsDrag) sliderScrub(e.clientY); });
+lsCv.addEventListener("pointerup", () => { lsDrag = false; });
+lsCv.addEventListener("pointercancel", () => { lsDrag = false; });
+addEventListener("resize", () => { buildSlider(); requestDraw(); });
+
+/* ---------------------------------------------------------------- 相机 */
+let pointers = new Map();
+let gesture = null;
+
+cv.addEventListener("pointerdown", e => {
+  try { cv.setPointerCapture(e.pointerId); } catch (err) { /* 合成事件/部分环境不支持 */ }
+  pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  gesture = null;
+  if (pointers.size === 2) {
+    const [a, b] = [...pointers.values()];
+    gesture = { d: Math.hypot(a.x - b.x, a.y - b.y), cx: (a.x + b.x) / 2, cy: (a.y + b.y) / 2 };
+  }
+});
+cv.addEventListener("pointermove", e => {
+  const p = pointers.get(e.pointerId);
+  if (!p) return;
+  const dx = e.clientX - p.x, dy = e.clientY - p.y;
+  p.x = e.clientX; p.y = e.clientY;
+
+  if (pointers.size === 2) {
+    const [a, b] = [...pointers.values()];
+    const d = Math.hypot(a.x - b.x, a.y - b.y);
+    const cx = (a.x + b.x) / 2, cy = (a.y + b.y) / 2;
+    if (gesture) {
+      cam.dist *= Math.max(0.5, Math.min(2, gesture.d / Math.max(d, 1)));
+      pan(cx - gesture.cx, cy - gesture.cy);
+    }
+    gesture = { d, cx, cy };
+  } else {
+    if (e.shiftKey || e.buttons === 2 || e.button === 2) pan(dx, dy);
+    else {
+      cam.az -= dx * 0.0075;
+      cam.el = Math.max(-1.5, Math.min(1.5, cam.el + dy * 0.0075));
+    }
+  }
+  requestDraw();
+});
+const endPtr = e => {
+  pointers.delete(e.pointerId);
+  if (pointers.size < 2) gesture = null;
+  if (pointers.size === 0) requestDraw();
+};
+cv.addEventListener("pointerup", endPtr);
+cv.addEventListener("pointercancel", endPtr);
+cv.addEventListener("contextmenu", e => e.preventDefault());
+
+function pan(dx, dy) {
+  // 1:1 跟手：屏幕 1 CSS px 对应画面中心处多少毫米
+  const scale = (2 * cam.dist * Math.tan(FOVY / 2)) / (cv.clientHeight || 780);
+  const right = [-Math.sin(cam.az), Math.cos(cam.az), 0];
+  const up = [-Math.sin(cam.el) * Math.cos(cam.az), -Math.sin(cam.el) * Math.sin(cam.az),
+              Math.cos(cam.el)];
+  cam.target[0] += (-right[0] * dx + up[0] * dy) * scale;
+  cam.target[1] += (-right[1] * dx + up[1] * dy) * scale;
+  cam.target[2] += (-right[2] * dx + up[2] * dy) * scale;
+}
+
+let wheelIdle = 0;
+cv.addEventListener("wheel", e => {
+  e.preventDefault();
+  clearTimeout(wheelIdle);
+  wheelIdle = setTimeout(() => { requestDraw(); }, 60);
+  cam.dist = Math.max(8, Math.min(cam.dist * (1 + Math.sign(e.deltaY) * 0.12), 4000));
+  requestDraw();
+}, { passive: false });
+
+/* ---------------------------------------------------------------- 顶栏 */
+document.querySelectorAll("[data-mode]").forEach(b => {
+  b.addEventListener("click", () => {
+    document.querySelectorAll("[data-mode]").forEach(x => x.classList.remove("on"));
+    b.classList.add("on");
+    mode = b.dataset.mode;
+    requestDraw();
+  });
+});
+
+cv.addEventListener("dblclick", () => {
+  cam.az = -0.9; cam.el = 0.62;
+  const b = index.bbox;
+  cam.target = [(b[0] + b[3]) / 2, (b[1] + b[4]) / 2, (b[2] + b[5]) / 2];
+  cam.dist = Math.hypot(b[3] - b[0], b[4] - b[1], b[5] - b[2]) * 1.85;
+  requestDraw();
+});
+
+/* 体积 / 线条 / 自动 —— 手机上管子太吃填充率时可以手动关掉 */
+const btn3d = document.getElementById("btn3d");
+const TUBE_LABEL = { auto: "体积·自动", on: "体积", off: "线条" };
+btn3d.addEventListener("click", () => {
+  const order = ["auto", "on", "off"];
+  tubeMode = order[(order.indexOf(tubeMode) + 1) % order.length];
+  btn3d.textContent = TUBE_LABEL[tubeMode];
+  btn3d.classList.toggle("on", tubeMode !== "off");
+  tier = "flat";               // 强制重新判定一次
+  requestDraw();
+});
+
+document.getElementById("btn3d").textContent = TUBE_LABEL[tubeMode];
+document.getElementById("btn3d").classList.toggle("on", tubeMode !== "off");
+
+/* 明暗三档滑杆：0 平涂 / 1 标准 / 2 强明暗（记到 localStorage，下次还用它） */
+const shadeEl = document.getElementById("shade");
+const shadeTag = document.getElementById("shadetag");
+function syncShadeUI() {
+  shadeEl.value = String(shadeLevel);
+  shadeTag.textContent = SHADE_PRESETS[shadeLevel].name;
+}
+shadeEl.addEventListener("input", () => {
+  shadeLevel = parseInt(shadeEl.value, 10) || 0;
+  shadeTag.textContent = SHADE_PRESETS[shadeLevel].name;
+  try { localStorage.setItem("viewer.shade", String(shadeLevel)); } catch (e) {}
+  requestDraw();
+});
+syncShadeUI();
+
+document.querySelectorAll("[data-view]").forEach(b => {
+  b.addEventListener("click", () => {
+    if (b.dataset.view === "iso") { cam.az = -0.9; cam.el = 0.62; }
+    else if (b.dataset.view === "top") { cam.az = -Math.PI / 2; cam.el = 1.49; }
+    else { cam.az = -Math.PI / 2; cam.el = 0.02; }
+    requestDraw();
+  });
+});
+
+const playBtn = document.getElementById("play");
+playBtn.addEventListener("click", () => {
+  playing = !playing;
+  playBtn.textContent = playing ? "❚❚" : "▶";
+  playBtn.classList.toggle("on", playing);
+  if (playing) {
+    if (cur >= index.layer_count - 1) setLayer(0);
+    const step = () => {
+      if (!playing) return;
+      if (cur >= index.layer_count - 1) { playing = false; playBtn.textContent = "▶"; playBtn.classList.remove("on"); return; }
+      // 按层耗时走：慢层停久一点，但封顶 120ms
+      setLayer(cur + 1);
+      const t = Math.min(120, Math.max(16, (index.layers[cur].t || 1) * 3));
+      playTimer = setTimeout(step, t);
+    };
+    step();
+  } else {
+    clearTimeout(playTimer);
+  }
+});
+
+/* 着色依据选择器 */
+const schemeSel = document.getElementById("scheme");
+function fillSchemeSelect() {
+  schemeSel.innerHTML = SCHEMES.map((sch, i) => {
+    const off = sch.kind !== "type" && !sch.avail;
+    return `<option value="${i}"${off ? " disabled" : ""}>${sch.label}${off ? "（无）" : ""}</option>`;
+  }).join("");
+  schemeSel.value = String(scheme);
+}
+schemeSel.addEventListener("change", () => {
+  scheme = +schemeSel.value;
+  buildRowColorTex();
+  buildLegend();
+  requestDraw();
+});
+schemeSel.addEventListener("click", e => e.stopPropagation());
+
+document.getElementById("lghead").addEventListener("click", (e) => {
+  if (e.target === schemeSel) return;
+  document.getElementById("legend").classList.toggle("collapsed");
+});
+
+/* ---------------------------------------------------------------- 启动 */
+const qs = new URLSearchParams(location.search).get("job");
+if (qs) loadJob(qs); else hintEl.textContent = "用法：/viewer/?job=<id>";
+resize();
+</script>
+</body>
+</html>

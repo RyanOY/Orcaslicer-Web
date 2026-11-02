@@ -1,0 +1,20 @@
+services:
+  slicer-node:
+    build:
+      context: .
+      args:
+        BASE_IMAGE: ubuntu-base:24.04     # 这台机器无外网，用本地打过的基础镜像
+        APT_MIRROR: mirrors.tuna.tsinghua.edu.cn
+    image: orca-slicer-node:0.11.6
+    container_name: orcaweb3d
+    ports:
+      - "8039:8000"
+    volumes:
+      - ./data06:/data                  # gcode、日志、任务记录、用户 profile 都落这里
+      - /vol1/1000/orca/model:/models:ro # NAS 上的模型库（只读挂载，库里另有上传目录）
+    environment:
+      SLICER_MODEL_DIRS: "/models"
+      SLICER_MAX_CONCURRENCY: "1"       # 想吃满更多核可调 2，注意内存（单任务峰值 ~1.5G）
+      SLICER_JOB_TIMEOUT: "900"
+      SLICER_JOB_TTL: "0"               # 0 = 产物不清理，注意 /data/tmp 会长
+    restart: unless-stopped

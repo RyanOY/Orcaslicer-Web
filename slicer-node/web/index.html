@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Orca Web — 切片工作台</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%230f6e4f'/%3E%3Cpath d='M6 22 L16 8 L26 22 Z' fill='none' stroke='%23fff' stroke-width='2.6' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="print.css">
+</head>
+<body>
+<header>
+  <div class="brand">Orca <span>Web</span></div>
+  <nav class="steps" id="steps">
+    <button data-step="models">1 模型</button>
+    <button data-step="plate">2 摆盘</button>
+    <button data-step="slice">3 切片</button>
+    <button data-step="preview">4 预览</button>
+    <button data-step="print">5 打印</button>
+    <button data-step="spool">耗材</button>
+  </nav>
+  <div class="hdr-right">
+    <span class="pill" id="health">…</span>
+    <button class="ghost" data-step="config">配置</button>
+  </div>
+</header>
+
+<main>
+  <!-- 1 模型 -->
+  <section class="view" id="view-models">
+    <div class="pad">
+      <div class="row" style="margin-bottom:12px">
+        <b>模型库</b>
+        <span class="hint" id="model-dir"></span>
+        <div class="spacer"></div>
+        <input type="file" id="upfile" accept=".stl,.3mf,.obj" multiple hidden>
+        <button id="btn-upload">上传模型</button>
+        <button class="ghost" id="btn-refresh-models">刷新</button>
+      </div>
+      <div class="grid-models" id="models"></div>
+      <div class="hint" id="models-empty" style="display:none">
+        模型目录是空的。上传 STL/3MF/OBJ，或者把文件放进 <code id="models-path"></code>。
+      </div>
+    </div>
+  </section>
+
+  <!-- 2 摆盘 -->
+  <section class="view" id="view-plate">
+    <div class="plate-wrap">
+      <div class="plate-stage">
+        <canvas id="bed"></canvas>
+        <div class="toolbar">
+          <button id="btn-undo" class="ghost" title="撤销 (Ctrl+Z)" disabled>↶ 撤销</button>
+          <button id="btn-redo" class="ghost" title="重做 (Ctrl+Shift+Z)" disabled>↷ 重做</button>
+          <span class="tsep"></span>
+          <button id="btn-arrange">自动摆盘</button>
+          <button id="btn-center">居中</button>
+          <span class="tmodes axis" id="axseg" title="旋转作用的轴">
+            <button data-axis="x" title="绕 X 轴（前后翻）">X</button>
+            <button data-axis="y" title="绕 Y 轴（左右翻）">Y</button>
+            <button data-axis="z" class="on" title="绕 Z 轴（转盘，默认）">Z</button>
+          </span>
+          <button id="btn-rot-l" title="按住 Shift 转 90°">⟲ 15°</button>
+          <button id="btn-rot-r" title="按住 Shift 转 90°">⟳ 15°</button>
+          <button id="btn-dup">复制</button>
+          <button id="btn-del" class="danger">删除</button>
+          <button id="btn-clear" class="ghost">清空</button>
+          <span class="tsep"></span>
+          <span class="tmodes" id="tmodes">
+            <button data-tmode="move" class="on">移动</button>
+            <button data-tmode="rotate">旋转</button>
+            <button data-tmode="scale">缩放</button>
+          </span>
+          <button id="btn-layface">选择底面</button>
+          <button id="btn-resetview" class="ghost">复位视角</button>
+        </div>
+        <div class="layhint" id="layhint">点模型的一个面，该面将旋转到朝下贴床 · 拖空白转视角</div>
+        <div class="bedstat" id="bedstat"></div>
+      </div>
+
+      <div class="plate-side">
+        <section>
+          <h4>对象 <span class="muted" id="objcount"></span></h4>
+          <div class="objs" id="objs"></div>
+          <div class="hint" id="objs-empty">还没加对象。去「1 模型」点「＋摆盘」。</div>
+        </section>
+        <section>
+          <h4>切片配置</h4>
+          <div class="row" style="margin-bottom:6px">
+            <label style="width:52px">机器</label>
+            <select id="sel-machine"></select>
+          </div>
+          <div class="row" style="margin-bottom:6px">
+            <label style="width:52px">工艺</label>
+            <select id="sel-process"></select>
+          </div>
+          <div id="filaments"></div>
+          <div class="row" style="margin-top:6px">
+            <label style="width:52px">热床板</label>
+            <select id="sel-bedtype"></select>
+          </div>
+          <div class="hint" id="bedtype-hint"></div>
+          <div class="hint" id="mmu-hint" style="margin-top:6px"></div>
+        </section>
+        <section>
+          <h4>检查</h4>
+          <div class="warns" id="plate-warns"></div>
+          <div class="hint" id="plate-ok">没有发现问题</div>
+          <div id="plate-fit" style="margin-top:8px"></div>
+        </section>
+        <section>
+          <button class="primary" id="btn-toslice" style="width:100%">下一步：切片设置</button>
+        </section>
+      </div>
+    </div>
+  </section>
+
+  <!-- 3 切片 -->
+  <section class="view" id="view-slice">
+    <div class="slice-wrap">
+      <div class="slice-main">
+        <div class="row" style="margin-bottom:10px">
+          <b>参数覆盖</b>
+          <span class="hint">只改本次切片，不动配置文件</span>
+          <div class="spacer"></div>
+          <input id="ov-search" placeholder="搜索参数…" style="width:180px">
+          <div class="seg" id="ov-mode">
+            <button data-mode="simple" class="on">常用</button>
+            <button data-mode="all">全部</button>
+          </div>
+          <button class="ghost" id="btn-ov-clear">清空覆盖</button>
+        </div>
+        <div class="hint" style="margin:-4px 0 8px">
+          这里也能改耗材级参数（收缩率、温度、回抽…），但覆盖会同时作用于所有槽位；
+          各槽不同的值请在「配置 → 耗材」里设。
+        </div>
+        <div id="ov-form"></div>
+      </div>
+      <div class="slice-side">
+        <h4 style="margin:0 0 8px;font-size:12px;color:var(--dim)">本次切片</h4>
+        <div class="kv" id="slice-summary"></div>
+        <div class="progress"><i id="slice-bar"></i></div>
+        <div class="row" style="margin:8px 0">
+          <span id="slice-status" class="badge">待开始</span>
+          <div class="spacer"></div>
+          <span class="hint" id="slice-time"></span>
+        </div>
+        <button class="primary" id="btn-slice" style="width:100%">开始切片</button>
+        <button class="ghost" id="btn-tolog" style="width:100%;margin-top:6px">看日志</button>
+        <pre class="log" id="slice-log" style="display:none"></pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- 4 预览 -->
+  <section class="view split" id="view-preview">
+    <div class="pv-head">
+      <b>预览</b>
+      <select id="pv-jobs" title="最近切好的任务" style="display:none;max-width:220px"></select>
+      <span class="badge" id="pv-job"></span>
+      <span class="hint" id="pv-sum"></span>
+      <div class="spacer"></div>
+      <a id="pv-gcode" class="hint" href="#" style="display:none">下载 gcode</a>
+      <button class="ghost" id="btn-pv-reload">重新加载</button>
+      <button class="primary" id="btn-topprint">下一步：发送打印</button>
+    </div>
+    <div class="pv-body"><iframe id="pvframe" title="切片预览"></iframe></div>
+  </section>
+
+  <!-- 5 打印 -->
+  <section class="view" id="view-print">
+    <div class="pad" style="max-width:1000px">
+      <div class="row" style="margin-bottom:10px">
+        <b>打印机控制</b>
+        <span class="badge" id="pl-state">—</span>
+        <span class="hint" id="pl-msg"></span>
+        <div class="spacer"></div>
+        <label class="hint row" style="gap:5px;width:auto">
+          <input type="checkbox" id="pl-auto" checked style="width:14px;height:14px">自动刷新</label>
+        <button class="ghost" id="btn-pl-refresh">刷新</button>
+      </div>
+
+      <!-- 概览 -->
+      <div class="card pad" id="pl-overview">
+        <div class="row">
+          <span class="nm" id="pl-file" style="font-weight:600;overflow:hidden;text-overflow:ellipsis">— 没在打印 —</span>
+          <div class="spacer"></div>
+          <span class="hint" id="pl-percent">0%</span>
+        </div>
+        <div class="progress" style="height:8px"><i id="pl-bar"></i></div>
+        <div class="pl-stats">
+          <div><span class="k">已打印</span><b id="pl-elapsed">—</b></div>
+          <div><span class="k">进度</span><b id="pl-eta">—</b></div>
+          <div><span class="k">层</span><b id="pl-layer">—</b></div>
+          <div><span class="k">耗材</span><b id="pl-filament">—</b></div>
+          <div><span class="k">速度/流量</span><b id="pl-factor">—</b></div>
+          <div><span class="k">位置</span><b id="pl-pos">—</b></div>
+        </div>
+      </div>
+
+      <!-- 温度 -->
+      <h4 class="sec">温度</h4>
+      <div class="tempcards" id="pl-temps"></div>
+
+      <!-- 手动移动 -->
+      <h4 class="sec">手动移动</h4>
+      <div class="card pad jogwrap">
+        <div class="jogpad">
+          <button data-jog="Y,+" title="Y+">Y+</button>
+          <button data-jog="X,-" title="X-">X−</button>
+          <button data-jog="X,+" title="X+">X+</button>
+          <button data-jog="Y,-" title="Y-">Y−</button>
+        </div>
+        <div class="jogcol">
+          <div class="row"><span class="k">步长</span>
+            <select id="jog-step" style="width:110px">
+              <option value="1">1 mm</option>
+              <option value="10" selected>10 mm</option>
+              <option value="50">50 mm</option>
+            </select>
+          </div>
+          <div class="row"><span class="k">速度</span>
+            <input id="jog-feed" type="number" value="3000" step="500" style="width:110px"><span class="hint">mm/min</span>
+          </div>
+          <div class="row">
+            <button data-jog="Z,+" title="Z+">Z+</button>
+            <button data-jog="Z,-" title="Z-">Z−</button>
+            <button data-jog="E,+" title="挤出" class="ghost">挤出</button>
+            <button data-jog="E,-" title="回抽" class="ghost">回抽</button>
+          </div>
+          <div class="hint" id="jog-hint">需要先归零；Z 轴请小步移动。</div>
+        </div>
+      </div>
+
+      <!-- 动作 -->
+      <h4 class="sec">打印动作</h4>
+      <div class="card pad row" style="flex-wrap:wrap;gap:8px">
+        <button class="ghost" data-act="home">归零 G28</button>
+        <button class="ghost" data-act="home_xy">归零 XY</button>
+        <button data-act="pause">暂停</button>
+        <button data-act="resume">继续</button>
+        <button class="danger" data-act="cancel">取消打印</button>
+        <button class="ghost" data-act="firmware_restart">固件重启</button>
+        <button class="danger" data-act="emergency_stop">急停</button>
+      </div>
+
+      <!-- 控制台 -->
+      <h4 class="sec">G-code 控制台</h4>
+      <div class="card pad" style="display:flex;flex-direction:column;gap:6px">
+        <textarea id="gcode-in" rows="3" placeholder="G28 / M104 S200 / SET_PRESSURE_ADVANCE ADVANCE=0.04（多行也行）"></textarea>
+        <div class="row">
+          <button class="primary" id="btn-gcode-send">发送</button>
+          <button class="ghost" id="btn-gcode-clear">清空输出</button>
+          <div class="spacer"></div>
+          <span class="hint" id="gcode-hint"></span>
+        </div>
+        <pre class="log" id="gcode-log" style="max-height:180px"></pre>
+      </div>
+
+      <h4 class="sec">Moonraker 连接</h4>
+      <div class="card pad" style="display:flex;flex-direction:column;gap:8px">
+        <div class="row"><label style="width:76px">地址</label>
+          <input id="pr-url" placeholder="http://192.168.71.33:7125"></div>
+        <div class="row"><label style="width:76px">API Key</label>
+          <input id="pr-key" placeholder="没设就留空"></div>
+        <div class="row"><label style="width:76px">名字</label>
+          <input id="pr-name" placeholder="Voron 2.4"></div>
+        <div class="row">
+          <button id="btn-pr-save">保存</button>
+          <button class="ghost" id="btn-pr-test">测试连接</button>
+          <span class="hint" id="pr-state"></span>
+        </div>
+      </div>
+
+      <h4 class="sec">发送任务</h4>
+      <div class="card pad" style="display:flex;flex-direction:column;gap:8px">
+        <div class="kv" id="print-summary"></div>
+        <div class="hint" id="print-none">还没有切好的任务，先完成切片。</div>
+        <div class="row" style="margin-top:4px">
+          <button id="btn-upload-print" disabled>上传到打印机</button>
+          <button class="primary" id="btn-upload-start" disabled>上传并开始打印</button>
+        </div>
+        <div class="hint" id="print-result"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 耗材 / 料盘 -->
+  <section class="view" id="view-spool">
+    <div class="pad" style="max-width:1000px">
+      <div class="row" style="margin-bottom:10px">
+        <b>耗材与料盘</b>
+        <span class="hint" id="spool-total"></span>
+        <div class="spacer"></div>
+        <button class="ghost" id="btn-spool-sync" title="从 Moonraker 打印历史补记账">与打印机对账</button>
+        <button class="primary" id="btn-spool-new">＋ 新建料盘</button>
+      </div>
+
+      <h4 class="sec">MMU / 工具头槽位 <span class="hint" id="mmu-live"></span></h4>
+      <div class="slotgrid" id="slots"></div>
+
+      <h4 class="sec">料盘</h4>
+      <div id="spools"></div>
+      <div class="hint" id="spools-empty" style="display:none">
+        还没有料盘。点右上「＋ 新建料盘」，填上总量（比如 330 m），之后每次打印会自动扣减。
+      </div>
+
+      <h4 class="sec">打印记录</h4>
+      <div class="card" id="spool-records"></div>
+    </div>
+  </section>
+
+  <!-- 新建/编辑料盘（弹层） -->
+  <div class="modal" id="spool-modal">
+    <div class="modal-box">
+      <div class="row" style="margin-bottom:10px"><b id="spool-modal-title">新建料盘</b>
+        <div class="spacer"></div><button class="ghost" id="btn-spool-cancel">×</button></div>
+      <div class="formgrid">
+        <label>名称</label><input id="sp-name" placeholder="JAYO PLA 白">
+        <label>材料</label><input id="sp-material" placeholder="PLA / PETG / ABS">
+        <label>品牌</label><input id="sp-vendor" placeholder="JAYO">
+        <label>颜色</label><input id="sp-color" type="color" value="#e8e8e8" style="height:32px">
+        <label>总长 (m)</label><input id="sp-total" type="number" value="330" step="1">
+        <label>剩余 (m)</label><input id="sp-remaining" type="number" value="330" step="1">
+        <label>线径 (mm)</label><input id="sp-diameter" type="number" value="1.75" step="0.01">
+        <label>槽位</label><select id="sp-slot"></select>
+        <label>切片配置</label><select id="sp-filament"></select>
+        <label>备注</label><input id="sp-note" placeholder="色号/批次">
+      </div>
+      <div class="row" style="margin-top:12px">
+        <button class="primary" id="btn-spool-save">保存</button>
+        <div class="spacer"></div>
+        <button class="danger ghost" id="btn-spool-del" style="display:none">删除</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 配置 -->
+  <section class="view" id="view-config">
+    <div class="cfg-wrap">
+      <div class="cfg-list">
+        <div class="tabs" id="cfg-tabs">
+          <button data-kind="machine" class="on">机器</button>
+          <button data-kind="process">工艺</button>
+          <button data-kind="filament">耗材</button>
+        </div>
+        <div id="cfg-items"></div>
+        <div style="padding:8px;display:flex;gap:6px">
+          <input type="file" id="cfg-import-file" accept=".json" hidden>
+          <button class="ghost" id="btn-cfg-import" style="flex:1">导入 JSON</button>
+        </div>
+      </div>
+      <div class="cfg-edit">
+        <div class="cfg-head" id="cfg-head" style="display:none">
+          <b id="cfg-title"></b>
+          <span class="tag" id="cfg-source"></span>
+          <div class="spacer"></div>
+          <input id="cfg-search" placeholder="搜索参数…" style="width:170px">
+          <div class="seg" id="cfg-mode">
+            <button data-mode="simple" class="on">常用</button>
+            <button data-mode="all">全部</button>
+          </div>
+          <button class="ghost" id="btn-cfg-clone">另存为</button>
+          <button class="ghost" id="btn-cfg-export">导出</button>
+          <button class="danger ghost" id="btn-cfg-delete">删除</button>
+          <button class="primary" id="btn-cfg-save" disabled>保存</button>
+        </div>
+        <div class="cfg-body" id="cfg-body">
+          <div class="cfg-empty" id="cfg-empty">从左边选一份配置开始编辑</div>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<div class="toast" id="toast"></div>
+<script type="module" src="app.js"></script>
+</body>
+</html>

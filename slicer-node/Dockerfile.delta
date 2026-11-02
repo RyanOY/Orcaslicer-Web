@@ -1,0 +1,12 @@
+# 增量镜像：Docker Hub 暂时不可达（base 拉不下来）时，在上一版镜像上叠代码层。
+# 用法：docker build -f Dockerfile.delta -t orca-slicer-node:<ver> .
+# 注意：源文件在 COPY 前必须是 a+r（chmod 在部分存储驱动上会被拒：Operation not permitted）。
+ARG BASE=orca-slicer-node:0.11.0
+FROM ${BASE}
+
+COPY app /app/app
+COPY viewer /app/viewer
+COPY web /app/web
+COPY profiles /app/profiles
+
+USER slicer
