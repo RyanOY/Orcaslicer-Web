@@ -31,11 +31,19 @@ def build_argv(settings: Settings, model: Path, outdir: Path,
         settings.orca_bin,
         str(model),
         "--slice", "0",
-        # 关掉自动排版：我们的 3MF 里三角形已经是最终坐标（摆盘的摆放结果），
-        # 默认 auto 会让 Orca 重新居中/排布，摆盘位置全部失效。
-        "--arrange", "0",
-        "--load-settings", "%s;%s" % (process_json, machine_json),
     ]
+    # 关掉自动排版：我们的 3MF 里三角形已经是最终坐标（摆盘的摆放结果），
+    # 默认 auto 会让 Orca 重新居中/排布，摆盘位置全部失效。
+    #
+    # 但 2.4.2 实测 `--arrange 0` 直接切不出东西：
+    #   rc=-50 "Nothing to be sliced, Either the print is empty or no object is
+    #   fully inside the print volume before apply."（cube.stl / boat.stl 都复现，
+    #   换官方未展平 profile 则是 rc=-17，同样切不出来）
+    # 所以默认不传该参数（SLICER_ARRANGE=""），让 Orca 自己摆 —— 单文件 STL
+    # 居中摆放正是期望行为。只有提交已烧好坐标的 3MF 时才设 SLICER_ARRANGE=0。
+    if settings.arrange != "":
+        argv += ["--arrange", settings.arrange]
+    argv += ["--load-settings", "%s;%s" % (process_json, machine_json)]
     if filament_json:
         # 多耗材/多工具头：--load-filaments 收分号分隔的列表，顺序 = 槽位号
         if isinstance(filament_json, (list, tuple)):

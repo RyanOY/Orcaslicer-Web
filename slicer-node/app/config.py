@@ -21,6 +21,7 @@ class Settings:
     job_ttl: int           # 完成的任务保留多久（秒），0=永不清
     home: Path             # orca 的 HOME，避免它往 /root 写
     preview: bool          # 切完顺手生成逐层线段（默认开）
+    arrange: str           # --arrange 的取值；"" = 不传该参数（见下方说明）
 
 
 def load_settings() -> Settings:
@@ -34,4 +35,10 @@ def load_settings() -> Settings:
         job_ttl=_env_int("SLICER_JOB_TTL", 0),
         home=Path(os.environ.get("SLICER_HOME", str(data_dir / "home"))),
         preview=os.environ.get("SLICER_PREVIEW", "1") not in ("0", "false", "False", ""),
+        # --arrange 取值：
+        #   ""   = 不传该参数，Orca 自己决定（2.4.2 实测唯一能切出 gcode 的模式）
+        #   "0"  = 禁用自动摆盘。**实测会失败**：Orca 2.4.2 + 展平 profile 下返回
+        #          rc=-50 "Nothing to be sliced / plate is empty"，模型再小也一样。
+        #          但 3MF 工程里摆盘位置已烧进三角形坐标时又需要它，故保留可配。
+        arrange=os.environ.get("SLICER_ARRANGE", ""),
     )

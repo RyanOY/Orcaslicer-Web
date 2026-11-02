@@ -52,12 +52,24 @@ def _all_dirs(settings) -> list[Path]:
 
 
 def safe_name(name: str) -> str:
+    """把客户端送来的名字收敛成「只可能是单个文件名」的安全形态。
+
+    历史坑：早先这里是**白名单**（`[^\\w\\u4e00-\\u9fff.@+\\-()\\[\\] ]` → `_`），
+    结果是全角括号 `（）`（U+FF08/U+FF09）这类中文常见标点全被换成 `_`：
+        `小金鱼卧躺（小）.3mf` → `小金鱼卧躺_小_.3mf`  → path_of() 找不到文件 → 404
+    白名单永远追不上真实文件名用到的标点，所以改成**黑名单**：
+    只拦真正危险的字符（路径分隔符、NUL、Windows 保留字符），其余原样保留。
+    """
     name = (name or "").strip().replace("\\", "/").split("/")[-1]
     if not name or name.startswith("."):
         raise ModelError("非法文件名")
     if Path(name).suffix.lower() not in SUFFIX:
         raise ModelError("只收 %s" % ", ".join(sorted(SUFFIX)))
-    return re.sub(r"[^\w\u4e00-\u9fff.@+\-()\[\] ]+", "_", name, flags=re.UNICODE)
+    # 已去掉目录部分，这里只需防：残留分隔符 / NUL / 控制字符 /
+    # Windows 非法字符 <>:"|?* / 以及首尾点和空格（Windows 下会丢）
+    name = re.sub(r'[\x00-\x1f<>:"|?*]', "_", name)
+    name = name.strip(" .") or "_"
+    return name
 
 
 def path_of(settings, name: str) -> Path:
