@@ -661,6 +661,7 @@ void main() {
   float hw = 0.5 * t1.z;                 // 半宽 = 挤出线宽 / 2
   float ty = t1.w;
   float hh = 0.5 * max(t0.w, 0.02);      // 半高 = 层高 / 2
+  float ang = t2.w;                      // 拐角角度（0 = 无拐角）
 
   float fade = layer_fade(t0.z);
   if (fade <= 0.0 || type_hidden(ty)) {
@@ -681,8 +682,18 @@ void main() {
     : normalize(cross(ld, UP));
   vec3 up = normalize(cross(right, ld));
 
-  vec3 cvd = normalize(endpoint - uCam);
-  vec3 diag = normalize(hh * up + hw * right);
+  /* 官方 FIX_TWISTING：判断「朝上还是朝侧」要用**离相机更近的那个端点**
+     作为视线基准，而不是当前顶点所在的那个端点。用后者的话，一段线
+     两端会各自朝向不同，盒子在两端之间发生扭转（twisting），
+     长方盒会显示成扭曲的楔形。 */
+  float d2a = dot(uCam - pos_a, uCam - pos_a);
+  float d2b = dot(uCam - pos_b, uCam - pos_b);
+  bool aCloser = d2a < d2b;
+  vec3 closerPos = aCloser ? pos_a : pos_b;
+  vec3 cvd = normalize(closerPos - uCam);
+  /* 判据用的是 closer 端点的宽高（官方 closer_height_width_angle） */
+  float chh = aCloser ? hh : hh;      // 同一段两端层高相同，这里等价，保留结构以便将来对齐
+  vec3 diag = normalize(chh * up + hw * right);
   bool vertView =
     abs(dot(cvd, up)) / max(abs(dot(diag, up)), 1e-6) >
     abs(dot(cvd, right)) / max(abs(dot(diag, right)), 1e-6);
@@ -692,8 +703,20 @@ void main() {
 
   vec3 pos = endpoint + signs.x * rs * hw * right + signs.y * us2 * hh * up;
 
-  /* POINTY_CAPS：2 号与 7 号角点沿段方向外伸半宽，让相邻段在拐角互相咬合 */
-  if (vid == 2 || vid == 7) pos += (vid == 2 ? -1.0 : 1.0) * ld * hw;
+  /* 端面处理，严格按官方复制：
+     有拐角（ang != 0）时，角点沿段方向伸 half_width*sin(|ang|/2)，
+     再沿横截面方向偏 half_width*cos(|ang|/2) —— 这样两段在拐角处
+     各自让出一半角度，严丝合缝地咬合，不重叠也不缺口。
+     没有拐角时才是 POINTY_CAPS 的「沿段方向外伸一个半宽」。 */
+  if (vid == 2 || vid == 7) {
+    float sgn = (vid == 2) ? -1.0 : 1.0;
+    if (abs(ang) > 1e-6) {
+      pos += sgn * ld * hw * sin(abs(ang) * 0.5);
+      pos += sign(ang) * right * hw * cos(abs(ang) * 0.5);
+    } else {
+      pos += sgn * ld * hw;
+    }
+  }
 
   /* gcode 的 Z 是层顶面，盒体下移半层高（官方 position[2] -= 0.5*height） */
   pos.z -= hh;
@@ -703,9 +726,11 @@ void main() {
   vZtop = t0.z;
   gl_Position = uVP * vec4(pos, 1.0);
 
-  vec3 center = 0.5 * (pos_a + pos_b);
-  center.z -= hh;
-  vec3 nrm = pos - center;
+  /* 法线：官方是 normalize(pos - endpoint_pos)，用**所在端点**做原点，
+     不是段中点。端点原点的偏移量正好是「侧向/上下」两个方向的合成，
+     四个侧面朝向各差一个象限；换成中点为基准会让正负两侧混在一起，
+     光照方向就乱了（侧面明暗对不上）。 */
+  vec3 nrm = pos - endpoint;
   vNrm = length(nrm) > 1e-6 ? normalize(nrm) : vec3(0.0, 0.0, 1.0);
 }`;
 
@@ -991,9 +1016,28 @@ function buildSegTex() {
     const at = scene.hasAttr ? (u8[i * st + 18] | (u8[i * st + 19] << 8)) : 0;
     const va = scene.hasVact ? (u8[i * st + 20] | (u8[i * st + 21] << 8)) : 0;
     const ae = scene.hasVact ? (u8[i * st + 22] | (u8[i * st + 23] << 8)) : 0;
+
+    /* 拐角角度（官方 height_width_angle.z）：本段与上一段的夹角，
+       用 atan2(叉积, 点积)。没有前一段（段的起点不接上一段）时存 0，
+       着色器据此判断「这里没有拐角，尖角按 POINTY_CAPS 外伸即可」。
+       判据和官方一致：上一段的终点必须正好是本段的起点。 */
+    let ang = 0;
+    if (i > 0) {
+      const qp = (i - 1) * per;
+      const px0 = f32[qp], py0 = f32[qp + 1], px1 = f32[qp + 2], py1 = f32[qp + 3];
+      const cont = Math.abs(px1 - x0) < 1e-5 && Math.abs(py1 - y0) < 1e-5;
+      const hp = hOf[i - 1] || 0.2;
+      const sameLayer = Math.abs((zOf[i - 1] || 0) - (zOf[i] || 0)) < 1e-5;
+      if (cont && sameLayer && hp === h) {
+        const ax = x0 - px0, ay = y0 - py0;      // 上一段方向
+        const bx = x1 - x0, by = y1 - y0;        // 本段方向
+        ang = Math.atan2(ax * by - ay * bx, ax * bx + ay * by);
+      }
+    }
+
     data[o] = x0; data[o + 1] = y0; data[o + 2] = zOf[i]; data[o + 3] = h;
     data[o + 4] = x1; data[o + 5] = y1; data[o + 6] = width; data[o + 7] = ty;
-    data[o + 8] = at; data[o + 9] = va; data[o + 10] = ae; data[o + 11] = 0;
+    data[o + 8] = at; data[o + 9] = va; data[o + 10] = ae; data[o + 11] = ang;
   }
 
   if (!segTex) segTex = gl.createTexture();
