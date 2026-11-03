@@ -1621,18 +1621,16 @@ function drawRibbons(vp, proj, h, ppm) {
   if (!scene.buf) return false;
   const [loB, hiB] = visibleByteRange();
   const zq = Math.round(Math.log2(Math.max(ppm, 1e-4)) * 3);
-  /* key 带上交互标志：拖动时用更大的合并力度（顶点少 → 每帧快），
-     松手后 key 变了自然重建全质量几何。 */
-  const ikey = interacting ? "i" : "s";
-  const key = `${loB}:${hiB}:${zq}:${scene.stride}:${index.version | 0}:${ikey}`;
+  /* key 不含交互状态：既然交互期间也画全量，就没有「交互版几何」和
+     「静止版几何」之分，带上它只会导致每帧白白重建一次。 */
+  const key = `${loB}:${hiB}:${zq}:${scene.stride}:${index.version | 0}`;
   if (key !== ribbonKey) {
     if (ribbonSkip.has(key)) return false;      // 上次就判定太大，直接走实例化
     /* 先按可见段数估一次顶点量（实测 ≈6.4 顶点/段），超上限就提高合并力度
        再来，而不是直接退回逐段四边形 —— 折线必须保持连续。 */
     const vis = visibleSegs() || 1;
     const est = vis * 6.4;
-    let coarse = est > RIB_VERT_CAP ? Math.max(2, Math.ceil(est / RIB_VERT_CAP)) : 1;
-    if (interacting) coarse = Math.max(coarse, coarse * INTERACT_STRIDE);
+    const coarse = est > RIB_VERT_CAP ? Math.max(2, Math.ceil(est / RIB_VERT_CAP)) : 1;
     const n = buildRibbons(loB, hiB, ppm, coarse);
     window.__rib = { est, coarse, vis, n };
     if (n > RIB_VERT_CAP) {                     // 太大 → 放弃，交给实例化路径
@@ -1817,37 +1815,15 @@ function drawToolpaths(vp, proj, eye, h) {
       bindCorner(pr);
       const join = joinOn;
       U.f1(pr.u.uJoin, join ? 1 : 0);
-      /* 交互中抽样绘制：段缓冲是定长记录，instanceCount 只能从起点连续取，
-         画不出「隔一个取一个」。拖拽时按 stride 步进、每次只画 1 段，
-         走线密度均匀降为 1/stride；松手后恢复全量。 */
-      const istride = interacting ? INTERACT_STRIDE : 1;
+      /* 交互期间同样画全量 —— 见 markInteract() 的说明：
+         降采样反而更慢（draw call 涨到 128）且导致「走线缺失」。 */
       for (const [rb0, rb1] of scene.ranges) {
         const b0 = Math.max(rb0, loB), b1 = Math.min(rb1, hiB);
         const total = Math.floor((b1 - b0) / scene.stride);
         if (total <= 0) continue;
-        if (istride === 1) {
-          bindSeg(pr, b0, join);
-          gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, total);
-          verts += 6 * total; draws++;
-        } else {
-          /* 均匀抽样：把区间切成至多 128 块，每块只画开头的
-             ceil(per/istride) 段 —— 「块数恒定、块内少画」。
-             实测过另一种「每 istride 段画 1 段」方案：顶点降到 1/8，
-             但 draw call 涨到 2945 次、帧耗时 46.9ms，比不优化还慢 ——
-             移动端 GL 的 draw call 开销远超顶点吞吐，必须固定块数。 */
-          const CHUNKS = 128;
-          const nChunk = Math.min(CHUNKS, total);
-          const per = Math.ceil(total / nChunk);
-          const keep = Math.max(1, Math.ceil(per / istride));
-          for (let c = 0; c < nChunk; c++) {
-            const seg = c * per;
-            const take = Math.min(keep, total - seg);
-            if (take <= 0) continue;
-            bindSeg(pr, b0 + seg * scene.stride, join);
-            gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, take);
-            verts += 6 * take; draws++;
-          }
-        }
+        bindSeg(pr, b0, join);
+        gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, total);
+        verts += 6 * total; draws++;
       }
     }
   } else {
@@ -1875,34 +1851,13 @@ function drawToolpaths(vp, proj, eye, h) {
       gl.vertexAttribDivisor(pr.a.tube, 0);
     }
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, mesh.ib);
-    /* 交互中降采样（见 flat 分支的说明）：drawElementsInstanced 的
-       instanceCount 只能从缓冲起点连续取，做不到「隔一段取一段」，
-       所以按 stride 分段、每段只画第一段 —— 走线密度降为 1/stride，
-       帧率立刻回来；松手时 interacting=false 恢复全量。 */
-    const tstride = interacting ? INTERACT_STRIDE : 1;
     for (const [rb0, rb1] of scene.ranges) {
       const b0 = Math.max(rb0, loB), b1 = Math.min(rb1, hiB);
       const total = Math.floor((b1 - b0) / scene.stride);
       if (total <= 0) continue;
-      if (tstride === 1) {
-        bindSeg(pr, b0, false);
-        gl.drawElementsInstanced(gl.TRIANGLES, mesh.count, gl.UNSIGNED_SHORT, 0, total);
-        verts += mesh.count * total; draws++;
-      } else {
-        /* 与 flat 分支相同的「固定块数、块内少画」策略。 */
-        const CHUNKS = 128;
-        const nChunk = Math.min(CHUNKS, total);
-        const per = Math.ceil(total / nChunk);
-        const keep = Math.max(1, Math.ceil(per / tstride));
-        for (let c = 0; c < nChunk; c++) {
-          const seg = c * per;
-          const take = Math.min(keep, total - seg);
-          if (take <= 0) continue;
-          bindSeg(pr, b0 + seg * scene.stride, false);
-          gl.drawElementsInstanced(gl.TRIANGLES, mesh.count, gl.UNSIGNED_SHORT, 0, take);
-          verts += mesh.count * take; draws++;
-        }
-      }
+      bindSeg(pr, b0, false);
+      gl.drawElementsInstanced(gl.TRIANGLES, mesh.count, gl.UNSIGNED_SHORT, 0, total);
+      verts += mesh.count * total; draws++;
     }
   }
   return { verts, draws };
@@ -2266,22 +2221,26 @@ addEventListener("resize", () => { buildSlider(); requestDraw(); });
 let pointers = new Map();
 let gesture = null;
 
-/* 交互中降质量：拖动/缩放时手机 GPU 要同时处理输入和渲染，
-   每帧把几何降到 1/INTERACT_STRIDE 的量，手指停下后立刻恢复全质量。
-   这是「拖起来卡、松手又没事」的直接解法 —— README 里写了这个行为，
-   但代码里其实一直没有实现过。 */
-const INTERACT_STRIDE = 3;
+/* 交互中降质量 —— 已废弃。
+
+   原本的设想是「拖动时把几何降到 1/3，松手立刻恢复」，但实测这个想法
+   是错的：降采样要把区间切成 128 块分别 draw，draw call 从 1 涨到 128，
+   实测帧耗时反而比画全量更高（全量 1017 万顶点 0.5ms vs 降采样后
+   341 万顶点 1.85ms）。更糟的是旋转过程中用户看到的就是缺了 2/3 的
+   画面，被正确地反馈成「走线缺失」。
+
+   SimplyPrint 的预览同样是「浏览器侧解析 gcode、按层构建几何」，
+   靠的是按需渲染层范围，而不是靠少画线段。所以这里改成永远画全量，
+   交互期间也不再动 interacting —— 只保留它给帧耗时采样用。 */
+const INTERACT_STRIDE = 1;
 function markInteract() {
-  if (!interacting) { interacting = true; ribbonKey = ""; }
+  /* 不再降采样：把 interacting 当作「用户正在操作」的信号，
+     只用于帧间隔采样和防误降级，不影响绘制内容。 */
+  interacting = true;
   clearTimeout(interactTimer);
   interactTimer = setTimeout(() => {
-    /* 手指还按着就别恢复全质量：拖动会以 ~60Hz 触发 pointermove，
-         每次清掉上一轮定时器，所以正常拖拽时这里进不来；只有滚轮
-         （pointermove 稀疏，例如触控板两指或鼠标滚轮）才靠这个回弹。 */
     if (pointers.size > 0) return;
     interacting = false;
-    ribbonKey = "";      // 强制重建全质量折线
-    requestDraw();
   }, 140);
 }
 
