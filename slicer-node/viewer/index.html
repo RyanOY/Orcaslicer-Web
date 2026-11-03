@@ -267,8 +267,14 @@ const SCHEMES = [
 ];
 
 const cv = document.getElementById("gl");
+/* preserveDrawingBuffer 默认关闭（省显存、合成更快）。
+   加 ?capture=1 打开它，专门给自动化测试用 —— 否则 headless 下
+   readPixels / screenshot / toDataURL 只能读回全黑，无法验证渲染结果
+   （踩过：draw call 明明发生了 482 次，读回来还是黑的）。 */
+const CAPTURE = /(?:^|[?&])capture=1(?:&|$)/.test(location.search);
 const gl = cv.getContext("webgl2", { antialias: true, alpha: false,
-  depth: true, powerPreference: "high-performance" });
+  depth: true, powerPreference: "high-performance",
+  preserveDrawingBuffer: CAPTURE });
 const hintEl = document.getElementById("hint");
 
 /* ---------------------------------------------------------------- 矩阵 */
@@ -588,6 +594,156 @@ void main() {
   o = vec4(mix(uBg, min(vColor * k, vec3(1.0)), vFade), 1.0);   // 恒不透明
 }`;
 
+
+/* ---------------------------------------------------------------- 官方立体盒（纹理版）
+   移植 OrcaSlicer src/libvgcode/src/Shaders.hpp 的 Segments_Vertex_Shader。
+
+   为什么用纹理而不是实例属性：
+   官方用 buffer texture（glsl 的 samplerBuffer + texelFetch）传实例数据，
+   顶点属性只有「角点下标」一个。WebGL2 不支持 samplerBuffer
+   （保留字，编译不过），所以换成 **RGBA32F 的 2D float texture** +
+   texelFetch —— 语义完全等价，也是 WebGL2 里传大量数据最干净的方式。
+
+   顺带解决了此前立体盒"画面全空"的根本原因：
+   那一版沿用「实例属性 + vertexAttribDivisor」，而 bindSeg() 每帧都要
+   gl.bindBuffer(ARRAY_BUFFER)/vertexAttribPointer 设实例属性，这些状态
+   和角点下标属性共用同一套 VAO 状态，互相覆盖 —— 角点全乱，整片走线
+   消失。改用纹理后，实例数据完全不走顶点属性，冲突不复存在。
+
+   数据布局（每段占 3 个 texel，RGBA32F）：
+      texel i*3+0 : (x0, y0, z, layerHeight)
+      texel i*3+1 : (x1, y1, width, type)
+      texel i*3+2 : (attr, vact, aeff, 备用)
+   width 由 CPU 侧按官方公式预先算好（截面积 ÷ 层高）。 */
+const BOX_TEX_TEXELS_PER_SEG = 3;
+
+const VS_BOX2 = GLSL_HEAD + `
+in uint aVertexId;                       // 0..7 角点下标（唯一的顶点属性）
+uniform sampler2D uSegTex;               // 每段 3 texel 的实例数据
+uniform int uTexW;                       // 纹理宽度（texel）
+uniform float uBoxH;                     // 盒子高度 = 层高
+
+uniform vec3 uCam;                       // 相机位置（立体盒法线朝向要用）
+
+/* 输出：GLSL_HEAD 已经声明了 vColor / vFade，这里补自己的几个 */
+out vec3 vNrm;
+out vec3 vWpos;
+out float vZbot;
+out float vZtop;
+
+const vec3 UP = vec3(0.0, 0.0, 1.0);
+const vec2 VSIGNS[16] = vec2[16](
+  vec2(1.0, 0.0), vec2(0.0, 1.0), vec2(0.0, 0.0), vec2(0.0, -1.0),
+  vec2(0.0, -1.0), vec2(1.0, 0.0), vec2(0.0, 1.0), vec2(0.0, 0.0),
+  vec2(0.0, 1.0), vec2(-1.0, 0.0), vec2(0.0, 0.0), vec2(1.0, 0.0),
+  vec2(1.0, 0.0), vec2(0.0, 1.0), vec2(-1.0, 0.0), vec2(0.0, 0.0)
+);
+
+vec4 texAt(int idx) {
+  return texelFetch(uSegTex, ivec2(idx % uTexW, idx / uTexW), 0);
+}
+
+void main() {
+  int vid = int(aVertexId);
+  int base = gl_InstanceID * 3;
+  vec4 t0 = texAt(base);
+  vec4 t1 = texAt(base + 1);
+  vec4 t2 = texAt(base + 2);
+
+  vec3 pos_a = vec3(t0.xy, t0.z);
+  vec3 pos_b = vec3(t1.xy, t0.z);
+  float hw = 0.5 * t1.z;                 // 半宽 = 挤出线宽 / 2
+  float ty = t1.w;
+  float hh = 0.5 * max(t0.w, 0.02);      // 半高 = 层高 / 2
+
+  float fade = layer_fade(t0.z);
+  if (fade <= 0.0 || type_hidden(ty)) {
+    vFade = 0.0; vColor = vec3(0.0); vNrm = vec3(0.0, 0.0, 1.0); vWpos = vec3(0.0);
+    gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+    return;
+  }
+  vFade = fade;
+  vColor = seg_color(ty);
+
+  int id = vid < 4 ? 0 : 1;
+  vec3 endpoint = id == 0 ? pos_a : pos_b;
+  vec3 line = pos_b - pos_a;
+  float len = length(line);
+  vec3 ld = len > 1e-4 ? line / len : vec3(1.0, 0.0, 0.0);
+  vec3 right = abs(dot(ld, UP)) > 0.9
+    ? normalize(cross(vec3(1.0, 0.0, 0.0), ld))
+    : normalize(cross(ld, UP));
+  vec3 up = normalize(cross(right, ld));
+
+  vec3 cvd = normalize(endpoint - uCam);
+  vec3 diag = normalize(hh * up + hw * right);
+  bool vertView =
+    abs(dot(cvd, up)) / max(abs(dot(diag, up)), 1e-6) >
+    abs(dot(cvd, right)) / max(abs(dot(diag, right)), 1e-6);
+  vec2 signs = VSIGNS[vid + 8 * int(vertView)];
+  float rs = sign(dot(-cvd, right));
+  float us2 = sign(dot(-cvd, up));
+
+  vec3 pos = endpoint + signs.x * rs * hw * right + signs.y * us2 * hh * up;
+
+  /* POINTY_CAPS：2 号与 7 号角点沿段方向外伸半宽，让相邻段在拐角互相咬合 */
+  if (vid == 2 || vid == 7) pos += (vid == 2 ? -1.0 : 1.0) * ld * hw;
+
+  /* gcode 的 Z 是层顶面，盒体下移半层高（官方 position[2] -= 0.5*height） */
+  pos.z -= hh;
+
+  vWpos = pos;
+  vZbot = t0.z - t0.w;
+  vZtop = t0.z;
+  gl_Position = uVP * vec4(pos, 1.0);
+
+  vec3 center = 0.5 * (pos_a + pos_b);
+  center.z -= hh;
+  vec3 nrm = pos - center;
+  vNrm = length(nrm) > 1e-6 ? normalize(nrm) : vec3(0.0, 0.0, 1.0);
+}`;
+
+/* 片元着色器：光照常量与官方 direct_lighting() 完全一致 */
+const FS_BOX2 = `#version 300 es
+precision highp float;
+in vec3 vColor;
+in vec3 vNrm;
+in vec3 vWpos;
+in float vZbot;
+in float vZtop;
+in float vFade;
+uniform vec3 uLight;
+uniform vec3 uCam;
+uniform vec3 uBg;
+uniform float uLayerH;
+uniform float uGloss;
+out vec4 o;
+
+const vec3  L_FRONT_DIR = vec3(0.6985074, 0.1397015, 0.6985074);
+const float L_TOP_DIFFUSE = 0.6 * 0.8;
+const float L_TOP_SPECULAR = 0.6 * 0.25;
+const float L_TOP_SHININESS = 20.0;
+const float L_FRONT_DIFFUSE = 0.6 * 0.2;
+const float AMBIENT = 0.2;
+const float EMISSION = 0.15;
+
+void main() {
+  if (vFade <= 0.0) discard;
+  vec3 n = normalize(vNrm);
+  float td = L_TOP_DIFFUSE * max(dot(n, uLight), 0.0);
+  float fd = L_FRONT_DIFFUSE * max(dot(n, L_FRONT_DIR), 0.0);
+  float spec = 0.0;
+  if (uGloss > 0.0) {
+    vec3 h = normalize(normalize(uLight) + normalize(uCam - vWpos));
+    spec = L_TOP_SPECULAR * pow(max(dot(n, h), 0.0), L_TOP_SHININESS) * uGloss;
+  }
+  vec3 c = vColor * (AMBIENT + EMISSION + td + fd) + vec3(spec);
+  /* 层缝：盒子底部一小段压暗，平视时层与层更分得开 */
+  float tz = clamp((vWpos.z - vZbot) / max(uLayerH, 0.02), 0.0, 1.0);
+  c *= mix(0.86, 1.0, smoothstep(0.0, 0.28, tz));
+  o = vec4(mix(uBg, min(c, vec3(1.0)), vFade), 1.0);
+}`;
+
 /* 体积管：每段一根六棱柱，半径 = 挤出宽度/2，两端带球冠把拐角缺口填掉 */
 const VS_TUBE = GLSL_HEAD + `
 in vec4 aTube;        // (a: 0/1 沿段位置, b: 端帽轴向偏移/r, cosθ, sinθ)
@@ -698,9 +854,10 @@ const UN_NAMES = ["uVP", "uViewport", "uProj", "uLayerH", "uAreaOn", "uAreaStep"
   "uWidthScale", "uMinHalfPx", "uMaxHalfPx", "uColors", "uColorMode", "uRowColor",
   "uMode", "uZCur", "uZBot", "uHiddenMask", "uBg", "uLight", "uCam", "uShade",
   "uVRange", "uRowCount",
-  "uSK", "uAO", "uSeam", "uEdge", "uJoin"];
+  "uSK", "uAO", "uSeam", "uEdge", "uJoin",
+  "uGloss", "uSegTex", "uTexW", "uBoxH"];
 const AT_NAMES = ["corner", "tube", "start", "end", "z", "type", "area", "attr",
-                  "vact", "aeff", "nbP", "nbN", "rib", "hw", "nbrt"];
+                  "vact", "aeff", "nbP", "nbN", "rib", "hw", "nbrt", "vertexId"];
 
 function makeProg(vsSrc, fsSrc) {
   const p = gl.createProgram();
@@ -746,6 +903,14 @@ try {
   progRibbon = null;
   console.warn("折线着色器编译失败，退回逐段四边形：", e && e.message);
 }
+/* 纹理版立体盒：编译失败就退回原来的圆管，不让预览白屏 */
+let progBox2 = null;
+try {
+  progBox2 = makeProg(VS_BOX2, FS_BOX2);
+} catch (e) {
+  progBox2 = null;
+  console.warn("立体盒着色器编译失败，退回圆管：", e && e.message);
+}
 
 /* 基础网格：unit quad（屏幕线）+ 两种圆柱（thin / 带球冠的 caps） */
 const cornerBuf = gl.createBuffer();
@@ -753,6 +918,90 @@ gl.bindBuffer(gl.ARRAY_BUFFER, cornerBuf);
 gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
   0, -1, 1, -1, 0, 1,
   1, -1, 1, 1, 0, 1,
+]), gl.STATIC_DRAW);
+
+/* ---------------------------------------------------------------- 段数据纹理
+   把 segments.bin 重排成 RGBA32F 2D 纹理（每段 3 texel）供立体盒着色器
+   用 texelFetch 读取。WebGL2 不支持 samplerBuffer，这是等价替代。
+
+   布局：
+     texel[3i+0] = (x0, y0, z, layerHeight)
+     texel[3i+1] = (x1, y1, width_mm, type)
+     texel[3i+2] = (attr, vact, aeff, 0)
+   width_mm 按官方公式在 CPU 侧算好：截面积 ÷ 层高。 */
+const SEG_TEX_W_MAX = 4096;
+let segTex = null, segTexW = 0, segTexH = 0;
+
+function buildSegTex() {
+  if (!scene.buf || !scene.segs) return false;
+  if (segTex) { gl.deleteTexture(segTex); segTex = null; }
+  const segs = scene.segs;
+  const texels = segs * BOX_TEX_TEXELS_PER_SEG;
+  let w = SEG_TEX_W_MAX;
+  while (w > 16 && texels / w < 2) w >>= 1;
+  const h = Math.ceil(texels / w);
+  const data = new Float32Array(w * h * 4);
+
+  const st = scene.stride;
+  const f32 = new Float32Array(scene.buf);
+  const u8 = new Uint8Array(scene.buf);
+  const per = st >> 2;
+  const areaStep = (index && index.area_step) || 0.002;
+  const nSeg = Math.floor(scene.total / st);
+
+  // 每段的 z 与层高（逐段预计算，可变层高也对得上）
+  const zOf = new Float32Array(nSeg);
+  const hOf = new Float32Array(nSeg);
+  for (let li = 0; li < index.layers.length; li++) {
+    const ly = index.layers[li];
+    const n = ly.count | 0;
+    const off = Math.round(ly.offset / st);
+    const zA = +ly.z || 0;
+    const prev = li > 0 ? +index.layers[li - 1].z : null;
+    const hh = (prev !== null && Math.abs(zA - prev) > 0.01) ? Math.abs(zA - prev) : 0.2;
+    for (let k = off; k < off + n && k < nSeg; k++) { zOf[k] = zA; hOf[k] = hh; }
+  }
+
+  for (let i = 0; i < nSeg; i++) {
+    const q = i * per;
+    const o = i * 3 * 4;
+    const x0 = f32[q], y0 = f32[q + 1], x1 = f32[q + 2], y1 = f32[q + 3];
+    const ty = u8[i * st + 16];
+    const h = hOf[i] || 0.2;
+    let width = LINE_MM;
+    if (scene.hasArea) {
+      width = u8[i * st + 17] * areaStep / h;      // 官方：截面积 ÷ 层高
+      width = Math.max(0.05, Math.min(4.0, width));
+    }
+    const at = scene.hasAttr ? (u8[i * st + 18] | (u8[i * st + 19] << 8)) : 0;
+    const va = scene.hasVact ? (u8[i * st + 20] | (u8[i * st + 21] << 8)) : 0;
+    const ae = scene.hasVact ? (u8[i * st + 22] | (u8[i * st + 23] << 8)) : 0;
+    data[o] = x0; data[o + 1] = y0; data[o + 2] = zOf[i]; data[o + 3] = h;
+    data[o + 4] = x1; data[o + 5] = y1; data[o + 6] = width; data[o + 7] = ty;
+    data[o + 8] = at; data[o + 9] = va; data[o + 10] = ae; data[o + 11] = 0;
+  }
+
+  if (!segTex) segTex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, segTex);
+  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, w, h, 0, gl.RGBA, gl.FLOAT, data);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.bindTexture(gl.TEXTURE_2D, null);
+  segTexW = w; segTexH = h;
+  return true;
+}
+
+/* 角点下标缓冲：0..7，立体盒唯一的顶点属性 */
+const boxVertBuf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, boxVertBuf);
+gl.bufferData(gl.ARRAY_BUFFER, new Uint32Array([0, 1, 2, 3, 4, 5, 6, 7]), gl.STATIC_DRAW);
+const boxIdxBuf = gl.createBuffer();
+gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, boxIdxBuf);
+gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array([
+  0, 1, 2, 0, 2, 3, 0, 3, 4, 0, 4, 5, 0, 5, 6, 0, 6, 1, 5, 4, 7, 5, 7, 6,
 ]), gl.STATIC_DRAW);
 
 const TUBE_SIDES = 8;            // 截面压扁后 6 边会看得出折面，8 边更接近真实丝形
@@ -835,6 +1084,7 @@ let scheme = 0;               // 着色依据（SCHEMES 下标），0 = 走线�
    相邻段在拐点处互相穿插 —— 这正是「转折处重叠遮挡/缺失」的来源。
    折线路径在拐点共用角点并做斜接，天然无穿插。 */
 let tubeMode = "auto";        // 顶栏按钮可在 自动 / 体积 / 线条 间切
+let glossOn = true;           // 立体盒高光开关（官方 libvgcode 的 gloss_strength）
 let tier = "flat";            // 当前用的几何：flat | thin | caps
 let plate = { x0: 0, y0: 0, x1: 250, y1: 250, gridBuf: null, gridN: 0, unit: 10 };
 const cam = { az: -0.9, el: 0.62, dist: 300, target: [0, 0, 0] };
@@ -1041,6 +1291,9 @@ async function loadBin() {
   if (off >= total) {
     hintEl.textContent = "";
     window.__ready = true;
+    /* 数据到齐后建一次立体盒用的段纹理（RGBA32F，每段 3 texel）。
+       失败也不影响旧路径：drawToolpaths 里 segTex 为空会退回圆管。 */
+    try { buildSegTex(); } catch (e) { console.warn("段纹理构建失败：", e && e.message); segTex = null; }
   }
   requestDraw();
 }
@@ -1827,6 +2080,46 @@ function drawToolpaths(vp, proj, eye, h) {
   if (!scene.glbuf || !scene.ranges.length) return;
   const [loB, hiB] = visibleByteRange();
   let verts = 0, draws = 0;
+
+  /* ---- 官方立体盒（默认路径）----
+     实例数据走 RGBA32F 纹理，顶点属性只有角点下标，和 bindSeg() 的实例属性
+     完全隔离 —— 这是上一版立体盒「画面全空」的根因修法。
+     只有纹理建好时才走这里，否则退回下面的圆管。 */
+  if (progBox2 && segTex) {
+    const pr = progBox2;
+    setCommon(pr, vp, proj, h);
+    const f = [cam.target[0] - eye[0], cam.target[1] - eye[1], cam.target[2] - eye[2]];
+    const fl = Math.hypot(f[0], f[1], f[2]) || 1;
+    const lx = -f[0] / fl * 0.35, ly2 = -f[1] / fl * 0.35, lz = 1.0;
+    const ll = Math.hypot(lx, ly2, lz) || 1;
+    if (pr.u.uLight) gl.uniform3f(pr.u.uLight, lx / ll, ly2 / ll, lz / ll);
+    if (pr.u.uCam) gl.uniform3f(pr.u.uCam, eye[0], eye[1], eye[2]);
+    if (pr.u.uGloss) gl.uniform1f(pr.u.uGloss, glossOn ? 1.0 : 0.0);
+    if (pr.u.uSegTex) gl.uniform1i(pr.u.uSegTex, 0);
+    if (pr.u.uTexW) gl.uniform1i(pr.u.uTexW, segTexW);
+    if (pr.u.uBoxH) gl.uniform1f(pr.u.uBoxH, h);
+
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, segTex);
+    gl.bindBuffer(gl.ARRAY_BUFFER, boxVertBuf);
+    if (pr.a.vertexId !== undefined) {
+      gl.enableVertexAttribArray(pr.a.vertexId);
+      gl.vertexAttribIPointer(pr.a.vertexId, 1, gl.UNSIGNED_INT, 0, 0);
+      gl.vertexAttribDivisor(pr.a.vertexId, 0);
+    }
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, boxIdxBuf);
+    for (const [rb0, rb1] of scene.ranges) {
+      const b0 = Math.max(rb0, loB), b1 = Math.min(rb1, hiB);
+      const first = Math.floor(b0 / scene.stride);
+      const total = Math.floor((b1 - b0) / scene.stride);
+      if (total <= 0) continue;
+      gl.drawElementsInstanced(gl.TRIANGLES, 24, gl.UNSIGNED_SHORT, 0, total);
+      verts += 24 * total; draws++;
+    }
+    gl.bindTexture(gl.TEXTURE_2D, null);
+    return { verts, draws };
+  }
+
   if (tier === "flat") {
     /* 首选「折线三角带」：段与段共用角点，不会出现掐腰/碎点。
        段数太多（整模型一览）时退回实例化四边形，那条路径只为省内存。 */
