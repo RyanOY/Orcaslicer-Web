@@ -272,6 +272,9 @@ const cv = document.getElementById("gl");
    readPixels / screenshot / toDataURL 只能读回全黑，无法验证渲染结果
    （踩过：draw call 明明发生了 482 次，读回来还是黑的）。 */
 const CAPTURE = /(?:^|[?&])capture=1(?:&|$)/.test(location.search);
+/* 强制走旧圆管路径（?nobox=1）：立体盒在某些设备上若出问题，
+   这个开关能立刻验证是不是几何路径的锅，不必改代码重发版。 */
+const NO_BOX = /(?:^|[?&])nobox=1(?:&|$)/.test(location.search);
 const gl = cv.getContext("webgl2", { antialias: true, alpha: false,
   depth: true, powerPreference: "high-performance",
   preserveDrawingBuffer: CAPTURE });
@@ -722,25 +725,34 @@ uniform float uLayerH;
 uniform float uGloss;
 out vec4 o;
 
+/* 光照权重。
+   官方常量（ambient 0.2 + emission 0.15 = 0.35 底）在桌面大屏上没问题，
+   但在手机小屏 + 深色背景下，盒子的侧壁只拿到 ambient 那一档，实测截图里
+   外墙的 #FF7D38 被压到 rgb(88,44,19)（亮度 54/255）—— 暗到看不出颜色，
+   用户直接反应成「看不到模型」。
+   这里把「本体亮度」抬到 0.55 起步，漫反射/包裹光加起来最高约 1.15，
+   保证任何朝向的侧面都在 0.55~1.15 之间，颜色始终认得出来。 */
 const vec3  L_FRONT_DIR = vec3(0.6985074, 0.1397015, 0.6985074);
-const float L_TOP_DIFFUSE = 0.6 * 0.8;
-const float L_TOP_SPECULAR = 0.6 * 0.25;
+const float L_TOP_DIFFUSE = 0.60;
+const float L_TOP_SPECULAR = 0.18;
 const float L_TOP_SHININESS = 20.0;
-const float L_FRONT_DIFFUSE = 0.6 * 0.2;
-const float AMBIENT = 0.2;
-const float EMISSION = 0.15;
+const float L_FRONT_DIFFUSE = 0.22;
+const float AMBIENT = 0.55;          // 底亮度：侧壁也看得清
+const float WRAP = 0.35;             // 包裹光：背光面不至于全黑
 
 void main() {
   if (vFade <= 0.0) discard;
   vec3 n = normalize(vNrm);
-  float td = L_TOP_DIFFUSE * max(dot(n, uLight), 0.0);
+  float ndl = dot(n, uLight);
+  float td = L_TOP_DIFFUSE * max(ndl, 0.0);
   float fd = L_FRONT_DIFFUSE * max(dot(n, L_FRONT_DIR), 0.0);
+  float wrap = WRAP * clamp(ndl * 0.5 + 0.5, 0.0, 1.0);
   float spec = 0.0;
   if (uGloss > 0.0) {
     vec3 h = normalize(normalize(uLight) + normalize(uCam - vWpos));
     spec = L_TOP_SPECULAR * pow(max(dot(n, h), 0.0), L_TOP_SHININESS) * uGloss;
   }
-  vec3 c = vColor * (AMBIENT + EMISSION + td + fd) + vec3(spec);
+  vec3 c = vColor * (AMBIENT + td + fd + wrap) + vec3(spec);
   /* 层缝：盒子底部一小段压暗，平视时层与层更分得开 */
   float tz = clamp((vWpos.z - vZbot) / max(uLayerH, 0.02), 0.0, 1.0);
   c *= mix(0.86, 1.0, smoothstep(0.0, 0.28, tz));
@@ -2088,7 +2100,7 @@ function drawToolpaths(vp, proj, eye, h) {
      实例数据走 RGBA32F 纹理，顶点属性只有角点下标，和 bindSeg() 的实例属性
      完全隔离 —— 这是上一版立体盒「画面全空」的根因修法。
      只有纹理建好时才走这里，否则退回下面的圆管。 */
-  if (progBox2 && segTex) {
+  if (progBox2 && segTex && !NO_BOX) {
     const pr = progBox2;
     setCommon(pr, vp, proj, h);
     const f = [cam.target[0] - eye[0], cam.target[1] - eye[1], cam.target[2] - eye[2]];
@@ -2358,6 +2370,8 @@ function draw() {
   const costMs = performance.now() - t0;
   window.__stats = {
     tier, draws: st.draws, verts: st.verts, ranges: scene.ranges.length,
+    boxPath: !!(progBox2 && segTex && !NO_BOX), segTexW, segTexH,
+    glErr: gl.getError(),
     segs: scene.segs, bytes: scene.bytes, total: scene.total,
     ms: +costMs.toFixed(2), penalty: perfPenalty,
   };
