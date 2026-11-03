@@ -662,7 +662,21 @@ void main() {
 
   vec3 pos_a = vec3(t0.xy, t0.z);
   vec3 pos_b = vec3(t1.xy, t0.z);
-  float hw = 0.5 * t1.z;                 // 半宽 = 挤出线宽 / 2
+  /* 半宽 = 挤出线宽 / 2，但要有**屏幕像素下限**。
+     官方桌面预览一般全屏、模型占比大，0.45mm 的线总能占好几个像素；
+     手机竖屏 + 缩小视图时，远侧那一半走线可能只有不到 1 个像素宽，
+     光栅器会漏掉一部分采样点 —— 表现就是「靠近镜头的半圆完整、
+     远离镜头的半圆变成点状残缺」。
+     这里把世界宽度换算成像素，不足 uMinHalfPx 就抬到下限
+     （和 ribbon 路径用的是同一个下限常量，保证两条路径观感一致）。 */
+  float hwWorld = 0.5 * t1.z;
+  float depthRef = max(abs((uVP * vec4(pos_b.xy, pos_a.z, 1.0)).w), 1e-4);
+  float hwPx = hwWorld * uProj / depthRef;            // 屏幕像素
+  float minHalfPx = max(uMinHalfPx, 1.5);             // 至少 1.5 设备像素
+  if (hwPx < minHalfPx && hwPx > 1e-6) {
+    hwWorld *= minHalfPx / hwPx;                      // 按比例放大到下限
+  }
+  float hw = hwWorld;
   float ty = t1.w;
   float hh = 0.5 * max(t0.w, 0.02);      // 半高 = 层高 / 2
   float ang = t2.w;                      // 拐角角度（0 = 无拐角）
