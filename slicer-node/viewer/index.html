@@ -318,7 +318,12 @@ const FOVY = Math.PI / 5;         // 与 draw() 里的 perspective 保持一致
 const BG = [0.141, 0.141, 0.141];
 const WIDTH_SCALE = 1.15;         // 线宽 = 截面积/层高 × 该系数（搭接余量，防漏缝）
 const LINE_MM = 0.45;             // 没有面积数据时的兜底线宽
-const MIN_HALF_PX = 0.60;         // 设备像素：最细也留 1.2 px，避免亚像素线被光栅器漏成虚线
+/* 最细线宽（CSS 像素，半宽）。0.60 → 整条线 1.2 CSS px。
+   以前这里写的是「设备像素」，但在 dpr=2 的手机上 0.6 设备像素半宽
+   只有 0.6 CSS px，光栅器经常把远处的线直接漏掉 —— 用户看到的
+   「远处走线宽度变 0」就是这个。现在按 CSS 像素给足 1.2 px，
+   再乘 dpr 换成设备像素，任何屏幕上都不会细到消失。 */
+const MIN_HALF_PX = 0.60;         // CSS 像素半宽 → 整线 1.2 CSS px
 const MITER_LIMIT = 3.0;          // 斜接长度上限（单位 = 半线宽），再尖的角就削平
 const JOINT_LEN_FRAC = 0.45;      // 角点沿段方向最多伸到段长的这个比例（>0.5 会翻领结）
 const MAX_HALF_PX = 400.0;        // 基本不封顶：线宽必须跟着缩放走，放大才不会出现层间缝
@@ -548,8 +553,18 @@ void main() {
   vec2 dir = dot(sum, sum) > 1e-8 ? normalize(sum)
            : (dot(p1, p1) > 1e-12 ? normalize(p1)
            : (dot(p2, p2) > 1e-12 ? normalize(p2) : vec2(0.0, 1.0)));
-  float hwPx = clamp(hw * (uProj / max(abs(pc.w), 1e-4)), 0.6, uMaxHalfPx);
-  vEdgeK = clamp((hwPx - 0.6) / 1.6, 0.0, 1.0);
+  /* 透视正确的线宽：hw(物理半宽 mm) × 投影比例 ÷ 深度，远处自然变细 ——
+     这正是「近大远小」，是真实透视，不是缺陷。
+
+     但下限必须跟着设备像素走。以前这里写死 0.6（设备像素的半宽），
+     在 dpr=3 的手机上等于 0.2 CSS 像素，光栅器直接漏掉这段 ——
+     表现就是「远处走线宽度变 0」。改用 uMinHalfPx（= MIN_HALF_PX × dpr），
+     保证任何 dpr 下都有约 1.2 个 CSS 像素宽，至少能看见一条线。 */
+  /* uMinHalfPx 传入的已经是「半宽（设备像素）」= MIN_HALF_PX × dpr，
+     这里直接用，不要再乘 0.5 —— 否则 1.2 CSS px 的下限会被削回 0.6。 */
+  float minHalf = uMinHalfPx;
+  float hwPx = clamp(hw * (uProj / max(abs(pc.w), 1e-4)), minHalf, uMaxHalfPx);
+  vEdgeK = clamp((hwPx - minHalf) / 1.6, 0.0, 1.0);
   gl_Position = vec4(pc.xy + dir * (side * hwPx / uViewport) * pc.w, pc.z, pc.w);
 }`;
 
@@ -1445,7 +1460,9 @@ function buildRibbons(loB, hiB, ppm, coarse) {
   const nSeg = Math.floor(scene.total / st);
   const areaStep = (index && index.area_step) || 0.002;
   /* 像素下限：防止亚像素线被光栅器漏成虚线。
-     纯粹是抗锯齿的最低可见性保护，不参与线宽的物理含义。 */
+     纯抗锯齿保护，不参与线宽的物理含义。
+     注意它只作用于「当前相机距离」下的近处线：远处段的真实宽度本来就
+     更小，靠 shader 里的 minHalf 兜底，不在这里拉平 —— 否则透视就没了。 */
   const minHalf = 0.5 * RIB_MIN_PX / Math.max(ppm, 1e-4);
 
   let cap = 1 << 16, out = new Float32Array(cap), o = 0;
