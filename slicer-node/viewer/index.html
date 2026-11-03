@@ -163,7 +163,7 @@
   <button class="btn" data-view="top">俯视</button>
   <button class="btn" data-view="front">正视</button>
   <span class="sep"></span>
-  <button class="btn on" id="btn3d" title="体积管 / 屏幕线">体积</button>
+  <button class="btn on" id="btn3d" title="高光开关">高光</button>
   <span class="sep"></span>
   <input id="shade" type="range" min="0" max="2" step="1" value="1"
          title="明暗强度：平涂 / 标准 / 强明暗">
@@ -639,14 +639,17 @@ const vec2 VSIGNS[16] = vec2[16](
   vec2(1.0, 0.0), vec2(0.0, 1.0), vec2(-1.0, 0.0), vec2(0.0, 0.0)
 );
 
-vec4 texAt(int idx) {
-  return texelFetch(uSegTex, ivec2(idx % uTexW, idx / uTexW), 0);
+uniform int uFirstSeg;                   // 本批实例在全局段数组里的起始下标
+
+vec4 texAt(int segIdx) {
+  int p = (segIdx + uFirstSeg) * 3;      // 每段 3 个 texel
+  return texelFetch(uSegTex, ivec2(p % uTexW, p / uTexW), 0);
 }
 
 void main() {
   int vid = int(aVertexId);
-  int base = gl_InstanceID * 3;
-  vec4 t0 = texAt(base);
+  int base = gl_InstanceID;
+  vec4 t0 = texAt(base);        // texAt 内部已乘 3 并加 uFirstSeg
   vec4 t1 = texAt(base + 1);
   vec4 t2 = texAt(base + 2);
 
@@ -855,7 +858,7 @@ const UN_NAMES = ["uVP", "uViewport", "uProj", "uLayerH", "uAreaOn", "uAreaStep"
   "uMode", "uZCur", "uZBot", "uHiddenMask", "uBg", "uLight", "uCam", "uShade",
   "uVRange", "uRowCount",
   "uSK", "uAO", "uSeam", "uEdge", "uJoin",
-  "uGloss", "uSegTex", "uTexW", "uBoxH"];
+  "uGloss", "uSegTex", "uTexW", "uBoxH", "uFirstSeg"];
 const AT_NAMES = ["corner", "tube", "start", "end", "z", "type", "area", "attr",
                   "vact", "aeff", "nbP", "nbN", "rib", "hw", "nbrt", "vertexId"];
 
@@ -2113,6 +2116,11 @@ function drawToolpaths(vp, proj, eye, h) {
       const first = Math.floor(b0 / scene.stride);
       const total = Math.floor((b1 - b0) / scene.stride);
       if (total <= 0) continue;
+      /* 着色器按 gl_InstanceID 索引纹理，而它从 0 开始。
+         单层模式只画当前层那 3 层，起点不是 0，必须把这个偏移传进去，
+         否则一直读最前面几段 —— 那些段被 layer_fade 裁掉，画面就是空的
+         （实测 single 模式 ink 0.8% / accum·all 56%，就是这个原因）。 */
+      if (pr.u.uFirstSeg) gl.uniform1i(pr.u.uFirstSeg, first);
       gl.drawElementsInstanced(gl.TRIANGLES, 24, gl.UNSIGNED_SHORT, 0, total);
       verts += 24 * total; draws++;
     }
@@ -2231,23 +2239,14 @@ function noteFrameCost(frameMs) {
     requestDraw();
   }
 }
+/* 和 OrcaSlicer 官方一致：预览几何**只有一种** —— 世界空间立体盒。
+   官方 libvgcode 没有「线条模式」，也不在屏幕线/立体管之间切换，
+   所以这里不再产出 flat 档。caps / thin 只是预算档（这一帧画多少段），
+   几何类型不变。 */
 function pickTier(wpx) {
   const vis = Math.min(visibleSegs() || scene.segs || 1, scene.segs || 1);
   const capsOk = vis <= Math.min(CAPS_SEG_BUDGET, capBudget);
-  const tubeOk = vis <= Math.min(TUBE_SEG_BUDGET, tubeBudget);
-  if (tubeMode === "off") { tier = "flat"; return tier; }
-  if (tubeMode === "on") {
-    tier = (capsOk && wpx >= CAPS_MIN_PX) ? "caps" : "thin";
-    return tier;
-  }
-  if (tier === "flat") {
-    if (wpx > 2.3 && tubeOk) tier = (capsOk && wpx > CAPS_MIN_PX * 1.15) ? "caps" : "thin";
-  } else if (tier === "thin") {
-    if (wpx < 1.9 || !tubeOk) tier = "flat";
-    else if (capsOk && wpx > CAPS_MIN_PX * 1.15) tier = "caps";
-  } else {
-    if (!capsOk || wpx < CAPS_MIN_PX) tier = wpx < 1.9 ? "flat" : "thin";
-  }
+  tier = capsOk ? "caps" : "thin";
   return tier;
 }
 
@@ -2669,20 +2668,21 @@ cv.addEventListener("dblclick", () => {
   requestDraw();
 });
 
-/* 体积 / 线条 / 自动 —— 手机上管子太吃填充率时可以手动关掉 */
+/* 高光开关。
+   这个按钮原来在「自动 / 体积 / 线条」之间切几何类型，但 OrcaSlicer 官方
+   libvgcode 只有一种预览几何（世界空间立体盒），没有线条模式，也不在
+   屏幕线/立体管之间切换。所以改成官方有的那个维度：**高光强度**
+   （gloss_strength）。0 = 纯漫反射，1 = 带高光。 */
 const btn3d = document.getElementById("btn3d");
-const TUBE_LABEL = { auto: "体积·自动", on: "体积", off: "线条" };
+const GLOSS_LABEL = { on: "高光", off: "无高光" };
 btn3d.addEventListener("click", () => {
-  const order = ["auto", "on", "off"];
-  tubeMode = order[(order.indexOf(tubeMode) + 1) % order.length];
-  btn3d.textContent = TUBE_LABEL[tubeMode];
-  btn3d.classList.toggle("on", tubeMode !== "off");
-  tier = "flat";               // 强制重新判定一次
+  glossOn = !glossOn;
+  btn3d.textContent = GLOSS_LABEL[glossOn ? "on" : "off"];
+  btn3d.classList.toggle("on", glossOn);
   requestDraw();
 });
-
-document.getElementById("btn3d").textContent = TUBE_LABEL[tubeMode];
-document.getElementById("btn3d").classList.toggle("on", tubeMode !== "off");
+document.getElementById("btn3d").textContent = GLOSS_LABEL[glossOn ? "on" : "off"];
+document.getElementById("btn3d").classList.toggle("on", glossOn);
 
 /* 明暗三档滑杆：0 平涂 / 1 标准 / 2 强明暗（记到 localStorage，下次还用它） */
 const shadeEl = document.getElementById("shade");
