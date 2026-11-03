@@ -400,8 +400,15 @@ float layer_fade(float z) {
   float h = max(uLayerH, 0.04);
   if (uMode == 2) return 1.0;
   if (uMode == 1) {
+    /* 累积模式：当前层以上的不画，往下的层层变暗。
+       坑：停在最底层时 uZCur == uZBot，分母被 max(...,0.05) 夹成 0.05，
+       分子又恒为 0 —— 整片走线只剩 0.22 的暗色，比单层模式还暗，
+       看上去就是「切到累积反而更空了」。
+       这里改成：跨度太小时直接给满亮度（只有一层时就是它本身最亮）。 */
     if (z > uZCur + 0.6 * h) return 0.0;
-    return 0.22 + 0.78 * clamp((z - uZBot) / max(uZCur - uZBot, 0.05), 0.0, 1.0);
+    float span = uZCur - uZBot;
+    if (span < 0.05) return 1.0;
+    return 0.22 + 0.78 * clamp((z - uZBot) / span, 0.0, 1.0);
   }
   float d = (uZCur - z) / h;          // 0 = 当前层，1 = 下一层
   if (d < -0.5) return 0.0;
@@ -662,21 +669,9 @@ void main() {
 
   vec3 pos_a = vec3(t0.xy, t0.z);
   vec3 pos_b = vec3(t1.xy, t0.z);
-  /* 半宽 = 挤出线宽 / 2，但要有**屏幕像素下限**。
-     官方桌面预览一般全屏、模型占比大，0.45mm 的线总能占好几个像素；
-     手机竖屏 + 缩小视图时，远侧那一半走线可能只有不到 1 个像素宽，
-     光栅器会漏掉一部分采样点 —— 表现就是「靠近镜头的半圆完整、
-     远离镜头的半圆变成点状残缺」。
-     这里把世界宽度换算成像素，不足 uMinHalfPx 就抬到下限
-     （和 ribbon 路径用的是同一个下限常量，保证两条路径观感一致）。 */
-  float hwWorld = 0.5 * t1.z;
-  float depthRef = max(abs((uVP * vec4(pos_b.xy, pos_a.z, 1.0)).w), 1e-4);
-  float hwPx = hwWorld * uProj / depthRef;            // 屏幕像素
-  float minHalfPx = max(uMinHalfPx, 1.5);             // 至少 1.5 设备像素
-  if (hwPx < minHalfPx && hwPx > 1e-6) {
-    hwWorld *= minHalfPx / hwPx;                      // 按比例放大到下限
-  }
-  float hw = hwWorld;
+  /* 半宽 = 挤出线宽 / 2。像素下限放在**算完 pos 之后**按当前顶点深度处理，
+     这里先留世界值 —— 详见下面 hwPx 那一段的说明。 */
+  float hw = 0.5 * t1.z;
   float ty = t1.w;
   float hh = 0.5 * max(t0.w, 0.02);      // 半高 = 层高 / 2
   float ang = t2.w;                      // 拐角角度（0 = 无拐角）
@@ -720,6 +715,25 @@ void main() {
   float us2 = sign(dot(-cvd, up));
 
   vec3 pos = endpoint + signs.x * rs * hw * right + signs.y * us2 * hh * up;
+
+  /* ---- 屏幕像素下限 ----
+     官方桌面预览一般全屏、模型占比大，0.45mm 的线总能占好几个像素。
+     手机竖屏 + 缩小视图时，**远离镜头那一半**走线在屏幕上可能不到 1 个
+     像素宽，光栅器会漏掉部分采样点 → 断成点状，而近端因为透视放大完好。
+
+     关键：换算像素必须用**当前顶点自己的深度**（pc.w），不能用段另一端
+     或段中点 —— 用错端点会让近端被误判成"太细"而放大、远端却不变，
+     结果两端宽度不一致，拐角咬合也跟着错位。
+
+     下限作用在世界半宽上（hw），并同步作用于端面尖角用的那个 hw，
+     否则盒体侧壁变宽了、端面还是按原宽收口，接缝处会露缝。 */
+  {
+    vec4 pcNow = uVP * vec4(pos, 1.0);
+    float depthNow = max(abs(pcNow.w), 1e-4);
+    float hwPx = hw * uProj / depthNow;
+    float minHalfPx = max(uMinHalfPx, 1.5);     // 至少 1.5 设备像素
+    if (hwPx > 1e-9 && hwPx < minHalfPx) hw *= minHalfPx / hwPx;
+  }
 
   /* 端面处理，严格按官方复制：
      有拐角（ang != 0）时，角点沿段方向伸 half_width*sin(|ang|/2)，
@@ -1058,10 +1072,28 @@ function buildSegTex() {
     data[o + 8] = at; data[o + 9] = va; data[o + 10] = ae; data[o + 11] = ang;
   }
 
+  /* 移动 GPU 对浮点纹理有硬限制：MAX_TEXTURE_SIZE 可能只有 2048，
+     RGBA32F 更可能压根不支持（WEBGL_color_buffer_float / OES_texture_float_linear
+     之外的纯采样路径，部分驱动会静默失败）。texImage2D 失败后纹理成为
+     不完整状态，texelFetch 一律返回 0 —— 表现就是「有的段画得出来、
+     有的整片消失」。这里显式校验，并在必要时把纹理压窄重试。 */
+  const maxTex = gl.getParameter(gl.MAX_TEXTURE_SIZE) | 0;
+  if (w > maxTex) { w = maxTex; h = Math.ceil(texels / w); }
+  if (h > maxTex) {
+    console.warn("段纹理过大，降到 2 texel/段方案");
+    return false;
+  }
+
   if (!segTex) segTex = gl.createTexture();
   gl.bindTexture(gl.TEXTURE_2D, segTex);
   gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, w, h, 0, gl.RGBA, gl.FLOAT, data);
+  const texErr = gl.getError();
+  if (texErr !== 0) {
+    console.warn("RGBA32F 纹理创建失败 err=" + texErr + "，退回圆管路径");
+    gl.deleteTexture(segTex); segTex = null;
+    return false;
+  }
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
@@ -2397,9 +2429,6 @@ function draw() {
 
   gl.enable(gl.DEPTH_TEST);
   gl.depthFunc(gl.LESS);          // 不透明：等深度不再重复绘制，结果确定
-  gl.enable(gl.CULL_FACE);        // 圆柱是封闭的，背面剔掉省一半填充
-  gl.cullFace(gl.BACK);
-  gl.frontFace(gl.CCW);
 
   const eye = [
     cam.target[0] + cam.dist * Math.cos(cam.el) * Math.cos(cam.az),
@@ -2428,12 +2457,15 @@ function draw() {
      全模型一览几十万段时少读 4 个邻接属性更划算。 */
   joinOn = tier === "flat" && wpx >= 1.8 && visibleSegs() <= JOIN_SEG_BUDGET;
   if (joinOn) ensureNeighbors();
-  if (tier !== "flat") {
-    gl.enable(gl.CULL_FACE);
-    gl.cullFace(gl.BACK);
-  } else {
-    gl.disable(gl.CULL_FACE);     // 屏幕线是单面四边形
-  }
+  /* 立体盒路径**关闭背面剔除**。
+     原因：官方的 signs 表会按视角把盒子的四个角点镜像翻转（这是让
+     盒体始终朝外的技巧），但翻转会让三角形绕序反向 —— 同一段走线，
+     朝向相机那一侧是 CCW、另一侧翻过来变 CW。开着 FRONT 剔除时，
+     翻转半边的「线段」会被整片剔掉，只剩没翻转的端角点，
+     正是用户看到的「远离镜头的边线段消失、只残留转折端点」。
+     盒子本身是封闭实体 + 有深度测试，不剔除只是多画一些背面像素，
+     正确性不受影响，换来的是任何视角都不缺面。 */
+  gl.disable(gl.CULL_FACE);       // 见上：稳定起见一律不剔除
   const st = drawToolpaths(vp, projPx, eye, layerHeight(cur)) || { verts: 0, draws: 0 };
   const costMs = performance.now() - t0;
   window.__stats = {
