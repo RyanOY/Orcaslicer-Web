@@ -792,10 +792,19 @@ function buildRowColorTex() {
 
 /* ---------------------------------------------------------------- 状态 */
 let index = null, jobId = null;
+/* 交互中降质量的状态标志。必须在这里（顶层、draw 之前）声明：
+   以前写在文件末尾的 pointer 事件段里，draw() 在首帧就会读到它 ——
+   `let` 有暂时性死区，声明没执行到时读到会抛 ReferenceError，
+   而且更早的版本压根没声明，于是「拖拽降采样」从来没真正生效过。 */
+let interacting = false, interactTimer = 0;
 const hidden = new Set();
 let cur = 0, mode = "single";
 let scheme = 0;               // 着色依据（SCHEMES 下标），0 = 走线类型
-let tubeMode = "off";         // 默认「线条」：细线最清楚；顶栏按钮可在 自动 / 体积 / 线条 间切
+/* 默认「自动」：小视角用屏幕折线（ribbon），放大后自动切体积管。
+   以前默认 off（强制 flat 实例化四边形），放大时每段是独立的方头矩形，
+   相邻段在拐点处互相穿插 —— 这正是「转折处重叠遮挡/缺失」的来源。
+   折线路径在拐点共用角点并做斜接，天然无穿插。 */
+let tubeMode = "auto";        // 顶栏按钮可在 自动 / 体积 / 线条 间切
 let tier = "flat";            // 当前用的几何：flat | thin | caps
 let plate = { x0: 0, y0: 0, x1: 250, y1: 250, gridBuf: null, gridN: 0, unit: 10 };
 const cam = { az: -0.9, el: 0.62, dist: 300, target: [0, 0, 0] };
@@ -902,6 +911,7 @@ async function loadJob(id) {
     return;
   }
   index = idx;
+  segPrefix = null;          // 换了任务，前缀和必须重算
   hidden.clear();
   // 每段字节数 = bin 总长 / 段数（v5=20, v4=18, v3=17），据此判断有哪些字段
   const segs = index.segment_count | 0;
@@ -1596,7 +1606,10 @@ function drawRibbons(vp, proj, h, ppm) {
   if (!scene.buf) return false;
   const [loB, hiB] = visibleByteRange();
   const zq = Math.round(Math.log2(Math.max(ppm, 1e-4)) * 3);
-  const key = `${loB}:${hiB}:${zq}:${scene.stride}:${index.version | 0}`;
+  /* key 带上交互标志：拖动时用更大的合并力度（顶点少 → 每帧快），
+     松手后 key 变了自然重建全质量几何。 */
+  const ikey = interacting ? "i" : "s";
+  const key = `${loB}:${hiB}:${zq}:${scene.stride}:${index.version | 0}:${ikey}`;
   if (key !== ribbonKey) {
     if (ribbonSkip.has(key)) return false;      // 上次就判定太大，直接走实例化
     /* 先按可见段数估一次顶点量（实测 ≈6.4 顶点/段），超上限就提高合并力度
@@ -1604,6 +1617,7 @@ function drawRibbons(vp, proj, h, ppm) {
     const vis = visibleSegs() || 1;
     const est = vis * 6.4;
     let coarse = est > RIB_VERT_CAP ? Math.max(2, Math.ceil(est / RIB_VERT_CAP)) : 1;
+    if (interacting) coarse = Math.max(coarse, coarse * INTERACT_STRIDE);
     const n = buildRibbons(loB, hiB, ppm, coarse);
     window.__rib = { est, coarse, vis, n };
     if (n > RIB_VERT_CAP) {                     // 太大 → 放弃，交给实例化路径
@@ -1788,13 +1802,37 @@ function drawToolpaths(vp, proj, eye, h) {
       bindCorner(pr);
       const join = joinOn;
       U.f1(pr.u.uJoin, join ? 1 : 0);
+      /* 交互中抽样绘制：段缓冲是定长记录，instanceCount 只能从起点连续取，
+         画不出「隔一个取一个」。拖拽时按 stride 步进、每次只画 1 段，
+         走线密度均匀降为 1/stride；松手后恢复全量。 */
+      const istride = interacting ? INTERACT_STRIDE : 1;
       for (const [rb0, rb1] of scene.ranges) {
         const b0 = Math.max(rb0, loB), b1 = Math.min(rb1, hiB);
-        const cnt = Math.floor((b1 - b0) / scene.stride);
-        if (cnt <= 0) continue;
-        bindSeg(pr, b0, join);
-        gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, cnt);
-        verts += 6 * cnt; draws++;
+        const total = Math.floor((b1 - b0) / scene.stride);
+        if (total <= 0) continue;
+        if (istride === 1) {
+          bindSeg(pr, b0, join);
+          gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, total);
+          verts += 6 * total; draws++;
+        } else {
+          /* 均匀抽样：把区间切成至多 128 块，每块只画开头的
+             ceil(per/istride) 段 —— 「块数恒定、块内少画」。
+             实测过另一种「每 istride 段画 1 段」方案：顶点降到 1/8，
+             但 draw call 涨到 2945 次、帧耗时 46.9ms，比不优化还慢 ——
+             移动端 GL 的 draw call 开销远超顶点吞吐，必须固定块数。 */
+          const CHUNKS = 128;
+          const nChunk = Math.min(CHUNKS, total);
+          const per = Math.ceil(total / nChunk);
+          const keep = Math.max(1, Math.ceil(per / istride));
+          for (let c = 0; c < nChunk; c++) {
+            const seg = c * per;
+            const take = Math.min(keep, total - seg);
+            if (take <= 0) continue;
+            bindSeg(pr, b0 + seg * scene.stride, join);
+            gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, take);
+            verts += 6 * take; draws++;
+          }
+        }
       }
     }
   } else {
@@ -1822,28 +1860,61 @@ function drawToolpaths(vp, proj, eye, h) {
       gl.vertexAttribDivisor(pr.a.tube, 0);
     }
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, mesh.ib);
+    /* 交互中降采样（见 flat 分支的说明）：drawElementsInstanced 的
+       instanceCount 只能从缓冲起点连续取，做不到「隔一段取一段」，
+       所以按 stride 分段、每段只画第一段 —— 走线密度降为 1/stride，
+       帧率立刻回来；松手时 interacting=false 恢复全量。 */
+    const tstride = interacting ? INTERACT_STRIDE : 1;
     for (const [rb0, rb1] of scene.ranges) {
       const b0 = Math.max(rb0, loB), b1 = Math.min(rb1, hiB);
-      const cnt = Math.floor((b1 - b0) / scene.stride);
-      if (cnt <= 0) continue;
-      bindSeg(pr, b0, false);
-      gl.drawElementsInstanced(gl.TRIANGLES, mesh.count, gl.UNSIGNED_SHORT, 0, cnt);
-      verts += mesh.count * cnt; draws++;
+      const total = Math.floor((b1 - b0) / scene.stride);
+      if (total <= 0) continue;
+      if (tstride === 1) {
+        bindSeg(pr, b0, false);
+        gl.drawElementsInstanced(gl.TRIANGLES, mesh.count, gl.UNSIGNED_SHORT, 0, total);
+        verts += mesh.count * total; draws++;
+      } else {
+        /* 与 flat 分支相同的「固定块数、块内少画」策略。 */
+        const CHUNKS = 128;
+        const nChunk = Math.min(CHUNKS, total);
+        const per = Math.ceil(total / nChunk);
+        const keep = Math.max(1, Math.ceil(per / tstride));
+        for (let c = 0; c < nChunk; c++) {
+          const seg = c * per;
+          const take = Math.min(keep, total - seg);
+          if (take <= 0) continue;
+          bindSeg(pr, b0 + seg * scene.stride, false);
+          gl.drawElementsInstanced(gl.TRIANGLES, mesh.count, gl.UNSIGNED_SHORT, 0, take);
+          verts += mesh.count * take; draws++;
+        }
+      }
     }
   }
   return { verts, draws };
 }
 
 /* 当前模式下真正会被画的段数（单层 3 层、累积到当前层、全部） */
-function visibleSegs() {
+/* 每层段数的前缀和：visibleSegs() 以前每帧从 0 累加到 cur，
+   累积模式（0..cur）下等于 O(层数)，而一帧里它被调用 2~3 次。
+   几百层的任务每帧白算几千次加法，拖拽时纯属浪费。改成 O(1) 查表。 */
+let segPrefix = null;
+function segPrefixOf() {
+  if (segPrefix) return segPrefix;
   const ls = (index && index.layers) || [];
+  const p = new Int32Array(ls.length + 1);
+  for (let i = 0; i < ls.length; i++) p[i + 1] = p[i] + (ls[i].count || 0);
+  segPrefix = p;
+  return p;
+}
+function visibleSegs() {
+  if (!index) return 0;
+  const ls = index.layers || [];
   if (!ls.length) return 0;
   if (mode === "all") return scene.segs;
-  let from = 0;
-  if (mode === "single") from = Math.max(0, cur - 2);
-  let n = 0;
-  for (let i = from; i <= cur && i < ls.length; i++) n += ls[i].count || 0;
-  return n;
+  const p = segPrefixOf();
+  const from = mode === "single" ? Math.max(0, cur - 2) : 0;
+  const to = Math.min(cur + 1, ls.length);
+  return to > from ? p[to] - p[from] : 0;
 }
 
 /* 视角相关的选择：太细的线不值得走体积管（三角形数翻 6 倍），
@@ -2124,10 +2195,30 @@ addEventListener("resize", () => { buildSlider(); requestDraw(); });
 let pointers = new Map();
 let gesture = null;
 
+/* 交互中降质量：拖动/缩放时手机 GPU 要同时处理输入和渲染，
+   每帧把几何降到 1/INTERACT_STRIDE 的量，手指停下后立刻恢复全质量。
+   这是「拖起来卡、松手又没事」的直接解法 —— README 里写了这个行为，
+   但代码里其实一直没有实现过。 */
+const INTERACT_STRIDE = 3;
+function markInteract() {
+  if (!interacting) { interacting = true; ribbonKey = ""; }
+  clearTimeout(interactTimer);
+  interactTimer = setTimeout(() => {
+    /* 手指还按着就别恢复全质量：拖动会以 ~60Hz 触发 pointermove，
+         每次清掉上一轮定时器，所以正常拖拽时这里进不来；只有滚轮
+         （pointermove 稀疏，例如触控板两指或鼠标滚轮）才靠这个回弹。 */
+    if (pointers.size > 0) return;
+    interacting = false;
+    ribbonKey = "";      // 强制重建全质量折线
+    requestDraw();
+  }, 140);
+}
+
 cv.addEventListener("pointerdown", e => {
   try { cv.setPointerCapture(e.pointerId); } catch (err) { /* 合成事件/部分环境不支持 */ }
   pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
   gesture = null;
+  markInteract();
   if (pointers.size === 2) {
     const [a, b] = [...pointers.values()];
     gesture = { d: Math.hypot(a.x - b.x, a.y - b.y), cx: (a.x + b.x) / 2, cy: (a.y + b.y) / 2 };
@@ -2155,12 +2246,18 @@ cv.addEventListener("pointermove", e => {
       cam.el = Math.max(-1.5, Math.min(1.5, cam.el + dy * 0.0075));
     }
   }
+  markInteract();
   requestDraw();
 });
 const endPtr = e => {
   pointers.delete(e.pointerId);
   if (pointers.size < 2) gesture = null;
-  if (pointers.size === 0) requestDraw();
+  if (pointers.size === 0) {
+    interacting = false;
+    clearTimeout(interactTimer);
+    ribbonKey = "";
+    requestDraw();
+  }
 };
 cv.addEventListener("pointerup", endPtr);
 cv.addEventListener("pointercancel", endPtr);
