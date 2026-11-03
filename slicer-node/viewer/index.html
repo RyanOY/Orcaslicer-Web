@@ -325,8 +325,23 @@ const MAX_HALF_PX = 400.0;        // 基本不封顶：线宽必须跟着缩放�
 const CAPS_MIN_PX = 4.5;          // 宽度够粗才画球冠端帽
 /* 体积管的三角形预算按「当前视图真正要画的段数」算，不是整份文件的段数：
    单层/累积模式只看几层，几十万段的任务照样能用管；只有「全部」才是全量。 */
-const CAPS_SEG_BUDGET = 200000;   // caps 48 三角/段
-const TUBE_SEG_BUDGET = 1600000;  // thin 16 三角/段
+/* 设备能力系数：低端机（内存小 / 高 DPR）自动收紧预算，避免为了画质
+   把帧率压垮。navigator.deviceMemory 拿不到时按中端（1.0）算。
+   实测缩放过程里 caps 模式最多约 470 万顶点，中高端手机没问题，
+   但 2GB 内存的机器需要早点退回 thin。 */
+const DEVICE_FACTOR = (() => {
+  let f = 1;
+  const mem = +(navigator.deviceMemory || 0);
+  if (mem && mem <= 2) f = 0.35;
+  else if (mem && mem <= 3) f = 0.6;
+  const dprNow = Math.min(devicePixelRatio || 1, 2);
+  if (dprNow >= 2) f *= 0.8;          // 高 DPR 着色量翻倍
+  return Math.max(0.25, Math.min(1, f));
+})();
+const CAPS_SEG_BUDGET = Math.round(200000 * DEVICE_FACTOR);   // caps 48 三角/段
+const TUBE_SEG_BUDGET = Math.round(1600000 * DEVICE_FACTOR);  // thin 16 三角/段
+/* 运行时可变预算（掉帧会自动收紧，见 noteFrameCost） */
+let capBudget = CAPS_SEG_BUDGET, tubeBudget = TUBE_SEG_BUDGET;
 
 const GLSL_HEAD = `#version 300 es
 precision highp float;
@@ -1919,10 +1934,34 @@ function visibleSegs() {
 
 /* 视角相关的选择：太细的线不值得走体积管（三角形数翻 6 倍），
    带滞回避免缩放时来回跳。Orca 里也是「屏幕线 / 管」两套几何。 */
+/* 运行时自动降级：连续掉帧就永久收紧预算。
+   静态预算只能按设备猜，真机掉帧才是硬信号。命中一次就记住（页面生命周期内），
+   避免在「开→卡→关→不卡→开」之间来回抖。 */
+let perfPenalty = 1;          // 1 = 正常；每触发一次减半，最低 0.25
+let slowFrames = 0, slowMs = 0;
+/* 入参是帧间隔（ms）：60fps = 16.7，30fps = 33.3。超过 28ms 视为掉到 30fps 以下。
+   两个条件必须同时满足才降级：
+     1) 连续 30 帧都慢 —— 真机卡顿是成片出现的，偶发一两帧不算；
+     2) 这些慢帧累计超过 1.2 秒。
+   门槛定这么高是因为 headless / 软件渲染下 pointermove 的节流本身
+   就能制造 40ms 间隔（实测 12 帧门槛会误降级到 0.25）。 */
+function noteFrameCost(frameMs) {
+  if (perfPenalty <= 0.25) return;
+  if (frameMs > 28) { slowFrames++; slowMs += frameMs; }
+  else { slowFrames = 0; slowMs = 0; }
+  if (slowFrames >= 30 && slowMs >= 1200) {
+    perfPenalty = Math.max(0.25, perfPenalty / 2);
+    slowFrames = 0; slowMs = 0;
+    capBudget = Math.round(200000 * DEVICE_FACTOR * perfPenalty);
+    tubeBudget = Math.round(1600000 * DEVICE_FACTOR * perfPenalty);
+    tier = "flat";
+    requestDraw();
+  }
+}
 function pickTier(wpx) {
   const vis = Math.min(visibleSegs() || scene.segs || 1, scene.segs || 1);
-  const capsOk = vis <= CAPS_SEG_BUDGET;
-  const tubeOk = vis <= TUBE_SEG_BUDGET;
+  const capsOk = vis <= Math.min(CAPS_SEG_BUDGET, capBudget);
+  const tubeOk = vis <= Math.min(TUBE_SEG_BUDGET, tubeBudget);
   if (tubeMode === "off") { tier = "flat"; return tier; }
   if (tubeMode === "on") {
     tier = (capsOk && wpx >= CAPS_MIN_PX) ? "caps" : "thin";
@@ -1962,10 +2001,19 @@ function depthRange(eye) {
 let joinOn = false;             // 本次绘制是否做拐点斜接（见 draw()）
 const JOIN_SEG_BUDGET = 80000;  // 打开斜接的段数上限
 let rafPending = false;
+let lastFrameTs = 0;
 function requestDraw() {
   if (rafPending) return;
   rafPending = true;
-  requestAnimationFrame(() => { rafPending = false; draw(); });
+  requestAnimationFrame((ts) => {
+    rafPending = false;
+    /* 真实卡顿信号是「帧间隔」，不是 draw() 内部耗时：GPU 同步、合成器
+       排队都不在那段 t0 里（实测 draw 内部 1.3ms 时手指照样卡）。
+       只在交互中采样 —— 静止时不重绘，帧间隔没有意义。 */
+    if (interacting && lastFrameTs) noteFrameCost(ts - lastFrameTs);
+    lastFrameTs = ts;
+    draw();
+  });
 }
 
 function draw() {
@@ -2015,11 +2063,14 @@ function draw() {
     gl.disable(gl.CULL_FACE);     // 屏幕线是单面四边形
   }
   const st = drawToolpaths(vp, projPx, eye, layerHeight(cur)) || { verts: 0, draws: 0 };
+  const costMs = performance.now() - t0;
   window.__stats = {
     tier, draws: st.draws, verts: st.verts, ranges: scene.ranges.length,
     segs: scene.segs, bytes: scene.bytes, total: scene.total,
-    ms: +(performance.now() - t0).toFixed(2),
+    ms: +costMs.toFixed(2), penalty: perfPenalty,
   };
+  /* 帧耗时采样在 requestDraw 的 rAF 回调里按帧间隔做（见那里的说明），
+     这里只记录渲染本身的开销供调试。 */
   drawnLayerCount = 0;
 }
 
