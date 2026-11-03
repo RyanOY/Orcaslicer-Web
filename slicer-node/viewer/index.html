@@ -1993,9 +1993,29 @@ function depthRange(eye) {
     if (d < dmin) dmin = d;
     if (d > dmax) dmax = d;
   }
-  const near = Math.max(0.05, dmin * 0.55);
+  /* 放大时的坑：cam.dist 最小 8mm，而模型半径可能 80mm —— 相机直接钻进
+     模型内部，此时「相机到包围盒最近距离」被夹到 0.1，near 只有 0.06，
+     而 far 仍是 dmax*1.12（几十上百），far/near 比高达上千倍。深度精度
+     崩掉后相邻层、相邻段的深度比较开始出错，表现就是「放大后走线缺一截、
+     断断续续」。两道保护：
+       1) near 下限 0.3mm —— 一层才 0.2mm，near 比层高还小没有意义；
+       2) far/near 超过 2000 就抬 near 把比值压回来。
+     宁可裁掉贴着镜头的极近面，也不能让整幅走线出错。 */
+  const near = Math.max(0.3, dmin * 0.55);
   const far = Math.max(near * 2, dmax * 1.12 + 2);
+  const MAXRATIO = 2000;
+  if (far / near > MAXRATIO) return [far / MAXRATIO, far];
   return [near, far];
+}
+
+/* 相机最近距离：不能钻进模型里。以前滚轮写死 8mm、双指没有下限，
+   而模型半径可能 80mm —— 相机会进到实体内部，此时近裁剪面附近全是
+   贴着镜头的几何，深度精度被榨干，放大后走线就会缺/闪。
+   跟着模型尺寸走：半径的 0.35 倍，且不小于 6mm。 */
+function minCamDist() {
+  const b = (index && index.bbox) || [0, 0, 0, 100, 100, 100];
+  const r = Math.hypot(b[3] - b[0], b[4] - b[1], b[5] - b[2]) / 2;
+  return Math.max(6, r * 0.35);
 }
 
 let joinOn = false;             // 本次绘制是否做拐点斜接（见 draw()）
@@ -2292,7 +2312,7 @@ cv.addEventListener("pointermove", e => {
          缩放时绝对不能降采样 —— 用户挤近就是为了看走线细节，
          少画 2/3 直接表现为「走线缺失」。只有纯平移才降。 */
       zooming = Math.abs(Math.log(Math.max(ratio, 1e-6))) > 0.004;
-      cam.dist *= Math.max(0.5, Math.min(2, ratio));
+      cam.dist = Math.max(minCamDist(), cam.dist * Math.max(0.5, Math.min(2, ratio)));
       pan(cx - gesture.cx, cy - gesture.cy);
     }
     gesture = { d, cx, cy };
@@ -2344,7 +2364,8 @@ cv.addEventListener("wheel", e => {
   e.preventDefault();
   clearTimeout(wheelIdle);
   wheelIdle = setTimeout(() => { requestDraw(); }, 60);
-  cam.dist = Math.max(8, Math.min(cam.dist * (1 + Math.sign(e.deltaY) * 0.12), 4000));
+  cam.dist = Math.max(minCamDist(),
+    Math.min(cam.dist * (1 + Math.sign(e.deltaY) * 0.12), 4000));
   /* 滚轮/触控板缩放同样不降采样：缩放要看细节，必须完整走线。
      ribbonKey 清掉，让几何按新缩放重建（不重建会沿用旧缩放下的合并力度）。 */
   interacting = false;
