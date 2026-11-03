@@ -1266,7 +1266,13 @@ async function loadJob(id) {
   buildRowColorTex();
   fillSchemeSelect();
   buildPlate(index.bbox);
-  cur = Math.max(0, index.layer_count - 1);
+  /* 默认停在**最底层**（第 1 层），不是最顶层。
+     以前是 layer_count-1 = 最顶层，而单层模式只画当前层 + 下面 2 层 ——
+     顶层往往只剩百来个段（实测 240 层的模型：顶层 111 段、底层 1050 段，
+     且顶层在桥接/顶面收尾，面积很小），叠在一起几乎看不见，
+     用户看到的就是「加载完变成空的」。
+     停在底层能立刻看到完整的截面轮廓，也符合「从下往上看打印」的直觉。 */
+  cur = 0;
   buildLegend();
   buildSlider();
   document.getElementById("title").textContent =
