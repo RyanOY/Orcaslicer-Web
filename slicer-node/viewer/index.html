@@ -379,7 +379,6 @@ uniform int uMode;          // 0 = 单层, 1 = 累积, 2 = 全部
 uniform float uZCur;
 uniform float uZBot;
 uniform int uHiddenMask;    // 按类型隐藏的位掩码
-uniform vec3 uCam;         // 相机位置（世界空间），立体盒法线朝向要用
 uniform vec3 uBg;
 uniform float uShade;       // 1 = 给屏幕线加横截面明暗（底板网格为 0）
 
@@ -589,158 +588,6 @@ void main() {
   o = vec4(mix(uBg, min(vColor * k, vec3(1.0)), vFade), 1.0);   // 恒不透明
 }`;
 
-
-/* ---------------------------------------------------------------- 官方立体盒着色器
-   移植自 OrcaSlicer src/libvgcode/src/Shaders.hpp 的 Segments_Vertex_Shader。
-   核心：每段是一个**世界空间的方盒**，
-        宽 = 该段的挤出线宽（截面积 ÷ 层高）
-        高 = 该段的层高
-        长 = 段长
-   8 个角点的位置由 vertex_id 在着色器里算出来（官方同款），
-   所以每段实例只需要传「起点、终点」，和现在的 segments.bin 布局完全兼容。
-
-   与旧圆管路径的差别：
-   - 方盒的横截面是矩形（宽×层高），不是圆 —— 这正是官方预览 "一根根扁丝"
-     叠起来的样子，层与层严丝合缝，平视也能看出每层的分界。
-   - 端点带 POINTY_CAPS 尖角延伸（官方宏），相邻段在拐角处自然咬合，
-     既不缺口也不重叠。
-   - 光照按官方常量：ambient 0.2 + emission 0.15 + 顶光/前光漫反射 + 高光。 */
-const VS_BOX = GLSL_HEAD + `
-in uint aVertexId;    // 0..7，模板里的角点编号（整数属性）
-out vec3 vCol;
-out vec3 vNrm;
-out vec3 vWpos;
-out float vZbot;
-out float vZtop;
-
-const vec3 UP = vec3(0.0, 0.0, 1.0);
-// 官方 horizontal_vertical_view_signs_array（前 8 个是水平视角，后 8 个是垂直视角）
-const vec2 VSIGNS[16] = vec2[16](
-  vec2(1.0, 0.0), vec2(0.0, 1.0), vec2(0.0, 0.0), vec2(0.0, -1.0),
-  vec2(0.0, -1.0), vec2(1.0, 0.0), vec2(0.0, 1.0), vec2(0.0, 0.0),
-  vec2(0.0, 1.0), vec2(-1.0, 0.0), vec2(0.0, 0.0), vec2(1.0, 0.0),
-  vec2(1.0, 0.0), vec2(0.0, 1.0), vec2(-1.0, 0.0), vec2(0.0, 0.0)
-);
-
-void main() {
-  float fade = layer_fade(aZ);
-  if (fade <= 0.0 || type_hidden(aType)) {
-    vFade = 0.0; vCol = vec3(0.0); vNrm = vec3(0.0, 0.0, 1.0);
-    vWpos = vec3(0.0); vZbot = 0.0; vZtop = 0.0;
-    gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
-    return;
-  }
-  vFade = fade;
-  vCol = seg_color(aType);
-
-  int vid = int(aVertexId);
-  int id = vid < 4 ? 0 : 1;                       // 0 = 起点端, 1 = 终点端
-  vec3 pos_a = vec3(aStart, aZ);
-  vec3 pos_b = vec3(aEnd, aZ);
-  vec3 endpoint_pos = id == 0 ? pos_a : pos_b;
-  vec3 line = pos_b - pos_a;
-  float line_len = length(line);
-  vec3 line_dir = line_len > 1e-4 ? line / line_len : vec3(1.0, 0.0, 0.0);
-
-  /* 走线的正交基：UP=Z 时 right = line × UP，up = right × line。
-     和官方一致（竖直段特殊处理，避免叉乘退化）。 */
-  vec3 line_right_dir = abs(dot(line_dir, UP)) > 0.9
-    ? normalize(cross(vec3(1.0, 0.0, 0.0), line_dir))
-    : normalize(cross(line_dir, UP));
-  vec3 line_up_dir = normalize(cross(line_right_dir, line_dir));
-
-  float half_height = 0.5 * max(uLayerH, 0.02);   // 高度 = 层高
-  float half_width  = 0.5 * line_width();          // 宽度 = 该段真实挤出线宽
-
-  // 视角朝向决定盒子的四个侧面哪个在外侧（官方 is_vertical_view 判据）
-  vec3 camera_view_dir = normalize(endpoint_pos - uCam);
-  vec3 diag = normalize(half_height * line_up_dir + half_width * line_right_dir);
-  bool is_vertical_view =
-    abs(dot(camera_view_dir, line_up_dir)) / max(abs(dot(diag, line_up_dir)), 1e-6) >
-    abs(dot(camera_view_dir, line_right_dir)) / max(abs(dot(diag, line_right_dir)), 1e-6);
-  vec2 signs = VSIGNS[vid + 8 * int(is_vertical_view)];
-  float view_right_sign = sign(dot(-camera_view_dir, line_right_dir));
-  float view_top_sign = sign(dot(-camera_view_dir, line_up_dir));
-
-  vec3 pos = endpoint_pos
-           + signs.x * view_right_sign * half_width  * line_right_dir
-           + signs.y * view_top_sign  * half_height * line_up_dir;
-
-  /* POINTY_CAPS：2 号和 7 号角点沿段方向外伸一个半宽，
-     让相邻两段在拐角处互相咬合 —— 官方注释里叫 "cap"，
-     不做这个的话段与段之间会露缝。 */
-  if (vid == 2 || vid == 7) {
-    float s = (vid == 2) ? -1.0 : 1.0;
-    pos += s * line_dir * half_width;
-  }
-
-  /* gcode 的 Z 是这一层的**顶面**，盒体应该在它下面半层高。
-     和官方 extract_pos_and_or_hwa() 里 position[2] -= 0.5f * v.height 一致。 */
-  pos.z -= half_height;
-
-  vWpos = pos;
-  vZbot = aZ - uLayerH;
-  vZtop = aZ;
-  gl_Position = uVP * vec4(pos, 1.0);
-
-  /* 法线：从盒子中心指向角点（盒子中心 = 段中点）。 */
-  vec3 center = mix(pos_a, pos_b, 0.5);
-  center.z -= half_height;
-  vec3 nrm = pos - center;
-  vNrm = length(nrm) > 1e-6 ? normalize(nrm) : vec3(0.0, 0.0, 1.0);
-}`;
-
-/* 片元着色器：光照常量取自官方 Segments_Vertex_Shader 的 diffuse/direct 项 */
-const FS_BOX = `#version 300 es
-precision highp float;
-in vec3 vCol;
-in vec3 vNrm;
-in vec3 vWpos;
-in float vZbot;
-in float vZtop;
-in float vFade;
-uniform vec3 uLight;        // 顶光方向（世界空间，已归一）
-uniform vec3 uCam;
-uniform vec3 uBg;
-uniform float uLayerH;
-uniform float uGloss;       // 高光强度，0 = 纯漫反射（官方 gloss_strength）
-out vec4 o;
-
-// 官方常量
-const vec3  LIGHT_FRONT_DIR = vec3(0.6985074, 0.1397015, 0.6985074);
-const float LIGHT_TOP_DIFFUSE = 0.6 * 0.8;
-const float LIGHT_TOP_SPECULAR = 0.6 * 0.25;
-const float LIGHT_TOP_SHININESS = 20.0;
-const float LIGHT_FRONT_DIFFUSE = 0.6 * 0.2;
-const float AMBIENT = 0.2;
-const float EMISSION = 0.15;
-
-void main() {
-  if (vFade <= 0.0) discard;
-  vec3 n = normalize(vNrm);
-  vec3 base = vCol;
-
-  // 官方 direct_lighting()
-  float top_diffuse = LIGHT_TOP_DIFFUSE * max(dot(n, uLight), 0.0);
-  float front_diffuse = LIGHT_FRONT_DIFFUSE * max(dot(n, LIGHT_FRONT_DIR), 0.0);
-  vec3 eye_pos = uCam - vWpos;
-  float spec = 0.0;
-  if (uGloss > 0.0) {
-    vec3 h = normalize(normalize(uLight) + normalize(eye_pos));
-    spec = LIGHT_TOP_SPECULAR * pow(max(dot(n, h), 0.0), LIGHT_TOP_SHININESS) * uGloss;
-  }
-
-  vec3 c = base * (AMBIENT + EMISSION + top_diffuse + front_diffuse) + vec3(spec);
-
-  /* 层缝：盒子侧面上下边内收一点点压暗，让相邻层在视觉上分开。
-     官方的方盒本身靠「顶面亮、侧面暗」自然分层，这里再补一道很浅的
-     底部暗边，平视时层次更清楚。 */
-  float tz = clamp((vWpos.z - vZbot) / max(uLayerH, 0.02), 0.0, 1.0);
-  c *= mix(0.86, 1.0, smoothstep(0.0, 0.28, tz));
-
-  o = vec4(mix(uBg, min(c, vec3(1.0)), vFade), 1.0);
-}`;
-
 /* 体积管：每段一根六棱柱，半径 = 挤出宽度/2，两端带球冠把拐角缺口填掉 */
 const VS_TUBE = GLSL_HEAD + `
 in vec4 aTube;        // (a: 0/1 沿段位置, b: 端帽轴向偏移/r, cosθ, sinθ)
@@ -851,9 +698,9 @@ const UN_NAMES = ["uVP", "uViewport", "uProj", "uLayerH", "uAreaOn", "uAreaStep"
   "uWidthScale", "uMinHalfPx", "uMaxHalfPx", "uColors", "uColorMode", "uRowColor",
   "uMode", "uZCur", "uZBot", "uHiddenMask", "uBg", "uLight", "uCam", "uShade",
   "uVRange", "uRowCount",
-  "uSK", "uAO", "uSeam", "uEdge", "uJoin", "uGloss"];
+  "uSK", "uAO", "uSeam", "uEdge", "uJoin"];
 const AT_NAMES = ["corner", "tube", "start", "end", "z", "type", "area", "attr",
-                  "vact", "aeff", "nbP", "nbN", "rib", "hw", "nbrt", "vertexId"];
+                  "vact", "aeff", "nbP", "nbN", "rib", "hw", "nbrt"];
 
 function makeProg(vsSrc, fsSrc) {
   const p = gl.createProgram();
@@ -882,7 +729,7 @@ function makeProg(vsSrc, fsSrc) {
   return { p, a, u };
 }
 
-let progFlat, progTube, progBox;
+let progFlat, progTube;
 let progRibbon;
 try {
   progFlat = makeProg(VS_FLAT, FS_LINE);
@@ -899,13 +746,6 @@ try {
   progRibbon = null;
   console.warn("折线着色器编译失败，退回逐段四边形：", e && e.message);
 }
-/* 官方立体盒是主路径；万一某个驱动不认这个着色器，退回原来的圆管，不能让预览白屏。 */
-try {
-  progBox = makeProg(VS_BOX, FS_BOX);
-} catch (e) {
-  progBox = null;
-  console.warn("立体盒着色器编译失败，退回圆管：", e && e.message);
-}
 
 /* 基础网格：unit quad（屏幕线）+ 两种圆柱（thin / 带球冠的 caps） */
 const cornerBuf = gl.createBuffer();
@@ -915,47 +755,10 @@ gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
   1, -1, 1, 1, 0, 1,
 ]), gl.STATIC_DRAW);
 
-/* ---------------------------------------------------------------- 立体盒模板
-   **完全对齐 OrcaSlicer 官方 libvgcode 的做法**（src/libvgcode/src/SegmentTemplate.cpp）：
-
-        /1-------6\     8 个角点，顶点着色器自己按方向摆位置，
-       / |       | \    实例数据里只有「本段起点/终点」，
-      2--0-------5--7   角点偏移全在 shader 里算 —— 每段只传一份数据。
-       \ |       | /     8 顶点 / 8 三角形（官方的 INDEX_DATA 一模一样）。
-        3-------4
-
-   与旧实现的根本区别：旧的是**屏幕空间扁带**（只有屏幕法线方向的宽度，
-   没有高度），平视时上下层的带子必然叠在一起；官方是世界空间的**立体盒**，
-   宽度 = 挤出线宽、高度 = 层高，是一个真实的方柱，层与层自然堆叠。
-   这就是「按 OrcaSlicer 官方实现」的核心。 */
-const BOX_VERTEX_DATA = new Uint32Array([0, 1, 2, 3, 4, 5, 6, 7]);
-const BOX_INDEX_DATA = new Uint16Array([
-  0, 1, 2,  0, 2, 3,   // 前端面
-  0, 3, 4,  0, 4, 5,   // 右侧/底部
-  0, 5, 6,  0, 6, 1,   // 左侧/顶部
-  5, 4, 7,  5, 7, 6,   // 后端面
-]);
-const boxTemplate = (() => {
-  const vao = gl.createVertexArray();
-  gl.bindVertexArray(vao);
-  const vb = gl.createBuffer();
-  gl.bindBuffer(gl.ARRAY_BUFFER, vb);
-  gl.bufferData(gl.ARRAY_BUFFER, BOX_VERTEX_DATA, gl.STATIC_DRAW);
-  gl.enableVertexAttribArray(0);
-  gl.vertexAttribIPointer(0, 1, gl.UNSIGNED_INT, 0, 0);
-  const ib = gl.createBuffer();
-  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ib);
-  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, BOX_INDEX_DATA, gl.STATIC_DRAW);
-  gl.bindVertexArray(null);
-  return { vao, count: BOX_INDEX_DATA.length };
-})();
-
-/* 旧的圆管模板保留：胶囊端帽在极端近景下仍有可取之处，
-   但默认路径已经换成上面的立体盒。 */
-const TUBE_SIDES = 8;
+const TUBE_SIDES = 8;            // 截面压扁后 6 边会看得出折面，8 边更接近真实丝形
 const TUBE_RINGS = {
   thin: [[0, 0], [1, 0]],
-  caps: [[0, -1], [0, 0], [1, 0], [1, 1]],
+  caps: [[0, -1], [0, 0], [1, 0], [1, 1]],     // 4 环 → 48 三角/段（原来 6 环 30 个）
 };
 const tubeMeshes = {};
 for (const [name, rings] of Object.entries(TUBE_RINGS)) {
@@ -1031,8 +834,7 @@ let scheme = 0;               // 着色依据（SCHEMES 下标），0 = 走线�
    以前默认 off（强制 flat 实例化四边形），放大时每段是独立的方头矩形，
    相邻段在拐点处互相穿插 —— 这正是「转折处重叠遮挡/缺失」的来源。
    折线路径在拐点共用角点并做斜接，天然无穿插。 */
-let tubeMode = "auto";        // 已废弃：几何只有立体盒一种，保留变量仅为兼容旧代码路径
-let glossOn = true;           // 顶栏按钮：高光开关（官方 libvgcode 的 gloss_strength）
+let tubeMode = "auto";        // 顶栏按钮可在 自动 / 体积 / 线条 间切
 let tier = "flat";            // 当前用的几何：flat | thin | caps
 let plate = { x0: 0, y0: 0, x1: 250, y1: 250, gridBuf: null, gridN: 0, unit: 10 };
 const cam = { az: -0.9, el: 0.62, dist: 300, target: [0, 0, 0] };
@@ -2049,31 +1851,6 @@ function drawToolpaths(vp, proj, eye, h) {
         verts += 6 * total; draws++;
       }
     }
-  } else if (progBox) {
-    /* ---- 官方立体盒路径（默认）----
-       每段一个世界空间方盒：宽 = 挤出线宽，高 = 层高。
-       实例数据只要起终点，角点位置由 vertex shader 按官方算法摆出来。 */
-    const pr = progBox;
-    setCommon(pr, vp, proj, h);
-    // 顶光方向跟相机走：转到哪面都能看到方盒的顶面亮、侧面稍暗（官方 light_top_dir）
-    const f = [cam.target[0] - eye[0], cam.target[1] - eye[1], cam.target[2] - eye[2]];
-    const fl = Math.hypot(f[0], f[1], f[2]) || 1;
-    let lx = -f[0] / fl * 0.35, ly2 = -f[1] / fl * 0.35, lz = 1.0;
-    const ll = Math.hypot(lx, ly2, lz) || 1;
-    if (pr.u.uLight) gl.uniform3f(pr.u.uLight, lx / ll, ly2 / ll, lz / ll);
-    if (pr.u.uCam) gl.uniform3f(pr.u.uCam, eye[0], eye[1], eye[2]);
-    if (pr.u.uGloss) gl.uniform1f(pr.u.uGloss, glossOn ? 1.0 : 0.0);
-
-    gl.bindVertexArray(boxTemplate.vao);
-    for (const [rb0, rb1] of scene.ranges) {
-      const b0 = Math.max(rb0, loB), b1 = Math.min(rb1, hiB);
-      const total = Math.floor((b1 - b0) / scene.stride);
-      if (total <= 0) continue;
-      bindSeg(pr, b0, false);
-      gl.drawElementsInstanced(gl.TRIANGLES, boxTemplate.count, gl.UNSIGNED_SHORT, 0, total);
-      verts += boxTemplate.count * total; draws++;
-    }
-    gl.bindVertexArray(null);
   } else {
     const pr = progTube;
     const mesh = tubeMeshes[tier === "caps" ? "caps" : "thin"];
@@ -2162,15 +1939,22 @@ function noteFrameCost(frameMs) {
   }
 }
 function pickTier(wpx) {
-  /* 和 OrcaSlicer 官方一致：**只有一种预览几何** —— 世界空间立体盒。
-     官方 libvgcode 没有「线条模式」，也不在屏幕线/立体管之间切换，
-     所以这里不再有 flat 档，只剩两个细节等级：
-        caps = 完整立体盒（8 角点，带 POINTY_CAPS 尖角）
-        thin = 同样几何，但段数过多时降到更省的预算内
-     两者的区别只是「这一帧画多少段」，不是几何类型。 */
   const vis = Math.min(visibleSegs() || scene.segs || 1, scene.segs || 1);
   const capsOk = vis <= Math.min(CAPS_SEG_BUDGET, capBudget);
-  tier = capsOk ? "caps" : "thin";
+  const tubeOk = vis <= Math.min(TUBE_SEG_BUDGET, tubeBudget);
+  if (tubeMode === "off") { tier = "flat"; return tier; }
+  if (tubeMode === "on") {
+    tier = (capsOk && wpx >= CAPS_MIN_PX) ? "caps" : "thin";
+    return tier;
+  }
+  if (tier === "flat") {
+    if (wpx > 2.3 && tubeOk) tier = (capsOk && wpx > CAPS_MIN_PX * 1.15) ? "caps" : "thin";
+  } else if (tier === "thin") {
+    if (wpx < 1.9 || !tubeOk) tier = "flat";
+    else if (capsOk && wpx > CAPS_MIN_PX * 1.15) tier = "caps";
+  } else {
+    if (!capsOk || wpx < CAPS_MIN_PX) tier = wpx < 1.9 ? "flat" : "thin";
+  }
   return tier;
 }
 
@@ -2594,19 +2378,18 @@ cv.addEventListener("dblclick", () => {
 
 /* 体积 / 线条 / 自动 —— 手机上管子太吃填充率时可以手动关掉 */
 const btn3d = document.getElementById("btn3d");
-/* 顶栏这个按钮原来在「自动 / 体积 / 线条」之间切几何类型。
-   OrcaSlicer 官方只有一种预览几何（世界空间立体盒），没有线条模式，
-   所以这里改成官方有的那个维度：**高光强度**（libvgcode 的 gloss_strength）。
-   0 = 纯漫反射（最接近官方默认），1 = 带高光。 */
-const GLOSS_LABEL = { off: "无高光", on: "高光" };
+const TUBE_LABEL = { auto: "体积·自动", on: "体积", off: "线条" };
 btn3d.addEventListener("click", () => {
-  glossOn = !glossOn;
-  btn3d.textContent = GLOSS_LABEL[glossOn ? "on" : "off"];
-  btn3d.classList.toggle("on", glossOn);
+  const order = ["auto", "on", "off"];
+  tubeMode = order[(order.indexOf(tubeMode) + 1) % order.length];
+  btn3d.textContent = TUBE_LABEL[tubeMode];
+  btn3d.classList.toggle("on", tubeMode !== "off");
+  tier = "flat";               // 强制重新判定一次
   requestDraw();
 });
-btn3d.textContent = GLOSS_LABEL[glossOn ? "on" : "off"];
-btn3d.classList.toggle("on", glossOn);
+
+document.getElementById("btn3d").textContent = TUBE_LABEL[tubeMode];
+document.getElementById("btn3d").classList.toggle("on", tubeMode !== "off");
 
 /* 明暗三档滑杆：0 平涂 / 1 标准 / 2 强明暗（记到 localStorage，下次还用它） */
 const shadeEl = document.getElementById("shade");
