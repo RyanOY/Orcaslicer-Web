@@ -318,9 +318,6 @@ const FOVY = Math.PI / 5;         // 与 draw() 里的 perspective 保持一致
 const BG = [0.141, 0.141, 0.141];
 const WIDTH_SCALE = 1.15;         // 线宽 = 截面积/层高 × 该系数（搭接余量，防漏缝）
 const LINE_MM = 0.45;             // 没有面积数据时的兜底线宽
-/* 线条模式线宽上限 = 层高 × 该比例。1.0 时相邻层刚好首尾相接不再重叠；
-   调到 1.15 会轻微搭接（看起来更连续，但层与层会糊一点）。 */
-const LINE_MAX_RATIO = 0.90;
 const MIN_HALF_PX = 0.60;         // 设备像素：最细也留 1.2 px，避免亚像素线被光栅器漏成虚线
 const MITER_LIMIT = 3.0;          // 斜接长度上限（单位 = 半线宽），再尖的角就削平
 const JOINT_LEN_FRAC = 0.45;      // 角点沿段方向最多伸到段长的这个比例（>0.5 会翻领结）
@@ -1448,13 +1445,8 @@ function buildRibbons(loB, hiB, ppm, coarse) {
   const nSeg = Math.floor(scene.total / st);
   const areaStep = (index && index.area_step) || 0.002;
   /* 像素下限：防止亚像素线被光栅器漏成虚线。
-     但拉远时 1.25px 换算成 mm 会比层高还大（dist=400mm 时 0.29mm > 0.2mm），
-     于是每层线宽超过层间距、平视必然糊成一片 —— 这正是一开始的问题。
-     所以把下限也夹在「层高的一半」以内：宁可略微断续，也不要叠成粗线。 */
-  const lhNow = (layerHeight(cur) || 0.2);
-  const minHalf = Math.min(
-    0.5 * RIB_MIN_PX / Math.max(ppm, 1e-4),
-    0.5 * lhNow * LINE_MAX_RATIO);
+     纯粹是抗锯齿的最低可见性保护，不参与线宽的物理含义。 */
+  const minHalf = 0.5 * RIB_MIN_PX / Math.max(ppm, 1e-4);
 
   let cap = 1 << 16, out = new Float32Array(cap), o = 0;
   const need = k => {
@@ -1597,15 +1589,15 @@ function buildRibbons(loB, hiB, ppm, coarse) {
       const at = scene.hasAttr ? (u8[i * st + 18] | (u8[i * st + 19] << 8)) : 0;
       const va = scene.hasVact ? (u8[i * st + 20] | (u8[i * st + 21] << 8)) : 0;
       const ae = scene.hasVact ? (u8[i * st + 22] | (u8[i * st + 23] << 8)) : 0;
-      /* 线宽 = 真实挤出宽度（截面积 ÷ 层高）。但平视时上下相邻层只隔
-         一个层高（0.2mm），而挤出线宽有 0.4~0.6mm —— 物理上就是重叠的，
-         画成实宽必然糊成一根粗线。线条模式（可选细线档）把线宽夹到
-         层高的 LINE_MAX_RATIO 倍，让每一层能分辨开；体积管模式仍按
-         真实宽度画（那里要的就是实体观感）。 */
-      const wTrue = scene.hasArea
+      /* 线宽严格取真实挤出宽度：截面积 ÷ 层高。
+         area 是解析 gcode 时按「E 增量 × 丝材截面积 ÷ 段长」算出的真实
+         截面积（见 app/gcode.py），h 是这一层自己的层高（可变层高下逐层
+         不同），所以外墙 0.42 / 内墙 0.45 / 填充 0.48 这些差异会原样呈现。
+         不做任何层高比例的额外限制 —— 平视时相邻层视觉上重叠是真实几何
+         决定的，渲染层不该篡改它。 */
+      const w = scene.hasArea
         ? Math.min(1.60, Math.max(0.10, area * areaStep / h * WIDTH_SCALE))
         : LINE_MM;
-      const w = Math.min(wTrue, Math.max(0.12, h * LINE_MAX_RATIO));
       /* 折线切分：类型变了、或者和上一段不相接（G0 / 空移 / 回抽 / 换层）
          —— 一律开启新折线，绝不跨着画 */
       const lx = px.length ? px[px.length - 1] : 0;
