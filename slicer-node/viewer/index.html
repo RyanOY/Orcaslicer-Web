@@ -644,17 +644,21 @@ const vec2 VSIGNS[16] = vec2[16](
 
 uniform int uFirstSeg;                   // 本批实例在全局段数组里的起始下标
 
-vec4 texAt(int segIdx) {
-  int p = (segIdx + uFirstSeg) * 3;      // 每段 3 个 texel
-  return texelFetch(uSegTex, ivec2(p % uTexW, p / uTexW), 0);
+/* 按 texel 下标取数（不是段号！）。段号换算成 texel 的下标由调用方算。 */
+vec4 texelAt(int texelIdx) {
+  return texelFetch(uSegTex, ivec2(texelIdx % uTexW, texelIdx / uTexW), 0);
 }
 
 void main() {
   int vid = int(aVertexId);
-  int base = gl_InstanceID;
-  vec4 t0 = texAt(base);        // texAt 内部已乘 3 并加 uFirstSeg
-  vec4 t1 = texAt(base + 1);
-  vec4 t2 = texAt(base + 2);
+  /* 每段占 3 个连续 texel。以前这里的 texAt() 会把参数当「段号」再乘 3，
+     于是 texAt(base+1) 取到的是**下一段的第一个 texel**（不是本段第 2 个），
+     t1/t2 全部错位 —— 表现为越往上数据越乱、顶层盒子畸形、线宽忽粗忽细。
+     现在统一先在 texel 空间里算出起点，再加 0/1/2。 */
+  int base = (gl_InstanceID + uFirstSeg) * 3;
+  vec4 t0 = texelAt(base);
+  vec4 t1 = texelAt(base + 1);
+  vec4 t2 = texelAt(base + 2);
 
   vec3 pos_a = vec3(t0.xy, t0.z);
   vec3 pos_b = vec3(t1.xy, t0.z);
@@ -2421,7 +2425,6 @@ function draw() {
   window.__stats = {
     tier, draws: st.draws, verts: st.verts, ranges: scene.ranges.length,
     boxPath: !!(progBox2 && segTex && !NO_BOX), segTexW, segTexH,
-    glErr: gl.getError(),
     segs: scene.segs, bytes: scene.bytes, total: scene.total,
     ms: +costMs.toFixed(2), penalty: perfPenalty,
   };
