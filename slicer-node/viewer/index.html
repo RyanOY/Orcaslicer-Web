@@ -2285,19 +2285,33 @@ cv.addEventListener("pointermove", e => {
     const [a, b] = [...pointers.values()];
     const d = Math.hypot(a.x - b.x, a.y - b.y);
     const cx = (a.x + b.x) / 2, cy = (a.y + b.y) / 2;
+    let zooming = false;
     if (gesture) {
-      cam.dist *= Math.max(0.5, Math.min(2, gesture.d / Math.max(d, 1)));
+      const ratio = gesture.d / Math.max(d, 1);
+      /* 双指手势里「缩放」和「平移/旋转」必须区别对待：
+         缩放时绝对不能降采样 —— 用户挤近就是为了看走线细节，
+         少画 2/3 直接表现为「走线缺失」。只有纯平移才降。 */
+      zooming = Math.abs(Math.log(Math.max(ratio, 1e-6))) > 0.004;
+      cam.dist *= Math.max(0.5, Math.min(2, ratio));
       pan(cx - gesture.cx, cy - gesture.cy);
     }
     gesture = { d, cx, cy };
+    if (zooming) {
+      /* 缩放中保持完整质量：撤掉降采样标记，并让 ribbon 立刻按新缩放重建 */
+      interacting = false;
+      clearTimeout(interactTimer);
+      ribbonKey = "";
+    } else {
+      markInteract();
+    }
   } else {
     if (e.shiftKey || e.buttons === 2 || e.button === 2) pan(dx, dy);
     else {
       cam.az -= dx * 0.0075;
       cam.el = Math.max(-1.5, Math.min(1.5, cam.el + dy * 0.0075));
     }
+    markInteract();
   }
-  markInteract();
   requestDraw();
 });
 const endPtr = e => {
@@ -2331,6 +2345,11 @@ cv.addEventListener("wheel", e => {
   clearTimeout(wheelIdle);
   wheelIdle = setTimeout(() => { requestDraw(); }, 60);
   cam.dist = Math.max(8, Math.min(cam.dist * (1 + Math.sign(e.deltaY) * 0.12), 4000));
+  /* 滚轮/触控板缩放同样不降采样：缩放要看细节，必须完整走线。
+     ribbonKey 清掉，让几何按新缩放重建（不重建会沿用旧缩放下的合并力度）。 */
+  interacting = false;
+  clearTimeout(interactTimer);
+  ribbonKey = "";
   requestDraw();
 }, { passive: false });
 
