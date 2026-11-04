@@ -164,6 +164,7 @@
   <button class="btn" data-view="front">正视</button>
   <span class="sep"></span>
   <button class="btn on" id="btn3d" title="高光开关">高光</button>
+  <button class="btn" id="btneng" title="渲染引擎：立体盒 / 兼容模式（显示异常时切换）">立体盒</button>
   <span class="sep"></span>
   <input id="shade" type="range" min="0" max="2" step="1" value="1"
          title="明暗强度：平涂 / 标准 / 强明暗">
@@ -633,7 +634,14 @@ void main() {
 const BOX_TEX_TEXELS_PER_SEG = 3;
 
 const VS_BOX2 = GLSL_HEAD + `
-in uint aVertexId;                       // 0..7 角点下标（唯一的顶点属性）
+/* 角点下标用 **float** 属性而不是 uint。
+   立体盒在飞牛OS 的 Android WebView 上完全画不出来（兼容模式正常），
+   而这条路径相对 ribbon 独有的东西只有三样：浮点纹理采样、
+   vertexAttribIPointer、整数顶点属性。实测浮点纹理探针是通的，
+   所以最可能就是「in uint + vertexAttribIPointer」这个组合 ——
+   部分移动 GPU / 驱动对整数顶点属性的支持有坑。
+   换成 float 属性再 int() 截断，语义完全一样，兼容性好得多。 */
+in float aVertexId;                      // 0..7 角点下标（float 传输）
 uniform sampler2D uSegTex;               // 每段 3 texel 的实例数据
 uniform int uTexW;                       // 纹理宽度（texel）
 uniform float uBoxH;                     // 盒子高度 = 层高
@@ -662,7 +670,7 @@ vec4 texelAt(int texelIdx) {
 }
 
 void main() {
-  int vid = int(aVertexId);
+  int vid = int(aVertexId + 0.5);          // float → int（四舍五入）
   /* 每段占 3 个连续 texel。以前这里的 texAt() 会把参数当「段号」再乘 3，
      于是 texAt(base+1) 取到的是**下一段的第一个 texel**（不是本段第 2 个），
      t1/t2 全部错位 —— 表现为越往上数据越乱、顶层盒子畸形、线宽忽粗忽细。
@@ -1340,7 +1348,7 @@ function buildSegTex() {
 /* 角点下标缓冲：0..7，立体盒唯一的顶点属性 */
 const boxVertBuf = gl.createBuffer();
 gl.bindBuffer(gl.ARRAY_BUFFER, boxVertBuf);
-gl.bufferData(gl.ARRAY_BUFFER, new Uint32Array([0, 1, 2, 3, 4, 5, 6, 7]), gl.STATIC_DRAW);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([0, 1, 2, 3, 4, 5, 6, 7]), gl.STATIC_DRAW);
 const boxIdxBuf = gl.createBuffer();
 gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, boxIdxBuf);
 gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array([
@@ -2463,7 +2471,7 @@ function drawToolpaths(vp, proj, eye, h) {
      实例数据走 RGBA32F 纹理，顶点属性只有角点下标，和 bindSeg() 的实例属性
      完全隔离 —— 这是上一版立体盒「画面全空」的根因修法。
      只有纹理建好时才走这里，否则退回下面的圆管。 */
-  if (progBox2 && segTex && !NO_BOX) {
+  if (progBox2 && segTex && !NO_BOX && !window.__forceNoBox) {
     const pr = progBox2;
     setCommon(pr, vp, proj, h);
     const f = [cam.target[0] - eye[0], cam.target[1] - eye[1], cam.target[2] - eye[2]];
@@ -2482,7 +2490,7 @@ function drawToolpaths(vp, proj, eye, h) {
     gl.bindBuffer(gl.ARRAY_BUFFER, boxVertBuf);
     if (pr.a.vertexId !== undefined) {
       gl.enableVertexAttribArray(pr.a.vertexId);
-      gl.vertexAttribIPointer(pr.a.vertexId, 1, gl.UNSIGNED_INT, 0, 0);
+      gl.vertexAttribPointer(pr.a.vertexId, 1, gl.FLOAT, false, 0, 0);
       gl.vertexAttribDivisor(pr.a.vertexId, 0);
     }
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, boxIdxBuf);
@@ -2619,6 +2627,10 @@ function noteFrameCost(frameMs) {
    所以这里不再产出 flat 档。caps / thin 只是预算档（这一帧画多少段），
    几何类型不变。 */
 function pickTier(wpx) {
+  /* 兼容模式（顶栏「兼容」按钮）：走屏幕空间折线，不依赖浮点纹理。
+     某些内嵌 WebView 上立体盒渲染不出东西且没有任何报错，
+     用户切到这里就能正常看。 */
+  if (window.__forceNoBox) { tier = "flat"; return tier; }
   const vis = Math.min(visibleSegs() || scene.segs || 1, scene.segs || 1);
   const capsOk = vis <= Math.min(CAPS_SEG_BUDGET, capBudget);
   tier = capsOk ? "caps" : "thin";
@@ -3097,6 +3109,27 @@ btn3d.addEventListener("click", () => {
 });
 document.getElementById("btn3d").textContent = GLOSS_LABEL[glossOn ? "on" : "off"];
 document.getElementById("btn3d").classList.toggle("on", glossOn);
+
+/* 渲染引擎切换：立体盒（官方实现，画质好）/ 兼容（屏幕空间折线，
+   不依赖浮点纹理，老设备更稳）。某些内嵌 WebView 上立体盒画不出来
+   却没有任何报错，用户自己切一下就能用。选择记到 localStorage。 */
+let engCompat = false;
+try { engCompat = localStorage.getItem("viewer.compat") === "1"; } catch (e) {}
+const btnEng = document.getElementById("btneng");
+function syncEngBtn() {
+  btnEng.textContent = engCompat ? "兼容" : "立体盒";
+  btnEng.classList.toggle("on", !engCompat);
+  window.__forceNoBox = engCompat;
+  tier = "flat";
+  ribbonKey = "";
+  requestDraw();
+}
+btnEng.addEventListener("click", () => {
+  engCompat = !engCompat;
+  try { localStorage.setItem("viewer.compat", engCompat ? "1" : "0"); } catch (e) {}
+  syncEngBtn();
+});
+syncEngBtn();
 
 /* 明暗三档滑杆：0 平涂 / 1 标准 / 2 强明暗（记到 localStorage，下次还用它） */
 const shadeEl = document.getElementById("shade");
