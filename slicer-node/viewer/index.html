@@ -201,22 +201,26 @@
 /* ========================================================================
    配色：直接取自 OrcaSlicer（libvgcode DEFAULT_EXTRUSION_ROLES_COLORS）
    ======================================================================== */
+/* 逐项取自 libvgcode ViewerImpl.cpp 的 DEFAULT_EXTRUSION_ROLES_COLORS。
+   之前 15 项里有 7 项和官方不一致（悬垂墙、底面、内部桥接、支撑界面、
+   缝隙填充、裙边、自定义），这次全部对齐 —— 预览里同一种走线类型
+   会和 OrcaSlicer 里看到的是同一个颜色。 */
 const ROLE_COLORS = [
   [255, 125, 56],   // 0  外墙     ExternalPerimeter
   [255, 230, 77],   // 1  内墙     Perimeter
-  [255, 170, 90],   // 2  悬垂墙   OverhangWall
+  [31, 31, 255],    // 2  悬垂墙   OverhangPerimeter
   [176, 48, 41],    // 3  稀疏填充 InternalInfill
   [150, 84, 204],   // 4  实心填充 SolidInfill
   [240, 64, 64],    // 5  顶面     TopSolidInfill
-  [205, 120, 140],  // 6  底面     BottomSurface
+  [102, 92, 199],   // 6  底面     BottomSurface
   [77, 128, 186],   // 7  桥接     BridgeInfill
-  [90, 170, 200],   // 8  内部桥接 InternalBridge
+  [77, 128, 186],   // 8  内部桥接 InternalBridgeInfill（官方与桥接同色）
   [0, 255, 0],      // 9  支撑     SupportMaterial
-  [0, 170, 90],     // 10 支撑界面 SupportInterface
-  [160, 160, 170],  // 11 缝隙填充 GapFill
-  [120, 200, 255],  // 12 裙边     Skirt/Brim
-  [200, 200, 200],  // 13 自定义   Custom
-  [230, 179, 179],  // 14 其他
+  [0, 128, 0],      // 10 支撑界面 SupportMaterialInterface
+  [255, 255, 255],  // 11 缝隙填充 GapFill
+  [0, 135, 110],    // 12 裙边     Skirt
+  [94, 209, 148],   // 13 自定义   Custom
+  [230, 179, 179],  // 14 其他     None
 ];
 const C_GRID = [58, 58, 58];
 const C_BORDER = [96, 96, 96];
