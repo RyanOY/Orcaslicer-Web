@@ -1034,6 +1034,20 @@ function gpuInfo() {
    上传不报错，但采样不出值，内嵌 WebView 里尤其常见。 */
 let floatProbeProg = null;
 function probeFloatTexture(tex, w, h, data) {
+  /* 先把会被改动的一切状态存下来，无论成功失败都在 finally 里还原。 */
+  const saved = {
+    fb: gl.getParameter(gl.FRAMEBUFFER_BINDING),
+    program: gl.getParameter(gl.CURRENT_PROGRAM),
+    viewport: gl.getParameter(gl.VIEWPORT),
+    clearColor: gl.getParameter(gl.COLOR_CLEAR_VALUE),
+    colorMask: gl.getParameter(gl.COLOR_WRITEMASK),
+    depthTest: gl.isEnabled(gl.DEPTH_TEST),
+    blend: gl.isEnabled(gl.BLEND),
+    cull: gl.isEnabled(gl.CULL_FACE),
+    activeTex: gl.getParameter(gl.ACTIVE_TEXTURE),
+    tex2d: gl.getParameter(gl.TEXTURE_BINDING_2D),
+  };
+  let ok = false;
   try {
     const wantX = data[0], wantY = data[1];
     if (floatProbeProg === null) {
@@ -1073,7 +1087,6 @@ function probeFloatTexture(tex, w, h, data) {
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, fbTex, 0);
     const okFb = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
 
-    let ok = false;
     if (okFb) {
       const prevView = gl.getParameter(gl.VIEWPORT);
       gl.viewport(0, 0, 1, 1);
@@ -1087,6 +1100,16 @@ function probeFloatTexture(tex, w, h, data) {
       gl.drawArrays(gl.TRIANGLES, 0, 3);
       const px = new Uint8Array(4);
       gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+      /* 注意：下面紧接着就要恢复所有被改动的 GL 状态。
+         这个探针在 buildSegTex() 里跑，而 buildSegTex 又在「加载完成」
+         那一刻执行 —— 如果状态没恢复干净，画完这一帧之后每帧的状态都是错的。
+
+         踩过的坑：探针里为了画到 1x1 framebuffer 而改了 clearColor、
+         viewport、DEPTH_TEST、BLEND、CULL_FACE、ACTIVE_TEXTURE、
+         纹理绑定、program。之前只在成功路径恢复了 viewport 和 DEPTH_TEST，
+         clearColor 完全没管 —— 主渲染每帧开头会自己 clearColor，看似没影响，
+         但一旦探针中途抛异常，后面的绘制就全在错误状态下跑。 */
+
       const gotX = (px[0] / 255 - 0.5) * 1000;
       const gotY = (px[1] / 255 - 0.5) * 1000;
       window.__probe = { wantX, wantY, px: [px[0], px[1], px[2], px[3]], gotX, gotY };
@@ -1096,17 +1119,28 @@ function probeFloatTexture(tex, w, h, data) {
       // 采样失败时 px 恒为 (0,0,0) 或完全随机，用 12mm 宽容差容易误判。
       const plausible = (v, want) => Math.abs(v - want) < 12;
       ok = plausible(gotX, wantX) && plausible(gotY, wantY);
-      gl.viewport(prevView[0], prevView[1], prevView[2], prevView[3]);
     }
-    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.deleteFramebuffer(fb); gl.deleteTexture(fbTex);
-    gl.enable(gl.DEPTH_TEST);
-    return ok;
   } catch (e) {
     console.warn("float 纹理探针失败：", e && e.message);
-    try { gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.enable(gl.DEPTH_TEST); } catch (_) {}
-    return false;
+    ok = false;
+  } finally {
+    /* 无条件恢复：这才是关键。以前异常路径只补了 DEPTH_TEST，
+       viewport/clearColor/纹理绑定全留在探针的状态上。 */
+    try {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, saved.fb);
+      gl.viewport(saved.viewport[0], saved.viewport[1], saved.viewport[2], saved.viewport[3]);
+      gl.clearColor(saved.clearColor[0], saved.clearColor[1], saved.clearColor[2], saved.clearColor[3]);
+      gl.colorMask(saved.colorMask[0], saved.colorMask[1], saved.colorMask[2], saved.colorMask[3]);
+      gl.activeTexture(saved.activeTex);
+      gl.bindTexture(gl.TEXTURE_2D, saved.tex2d);
+      gl.useProgram(saved.program);
+      if (saved.depthTest) gl.enable(gl.DEPTH_TEST); else gl.disable(gl.DEPTH_TEST);
+      if (saved.blend) gl.enable(gl.BLEND); else gl.disable(gl.BLEND);
+      if (saved.cull) gl.enable(gl.CULL_FACE); else gl.disable(gl.CULL_FACE);
+    } catch (_) { /* 恢复失败也不能抛出去 */ }
   }
+  return ok;
 }
 
 /* 页面内诊断：?diag=1 时显示 GPU 能力 + 渲染路径 + 墨量。
@@ -1173,7 +1207,7 @@ function reportDiag() {
       floatLinear: g.floatLinear, colorBufferFloat: g.colorBufferFloat,
       boxPath: !!s.boxPath, segTexW: s.segTexW, segTexH: s.segTexH,
       tier: s.tier, verts: s.verts, draws: s.draws, ink,
-      frameInk: window.__frameInk, buildMs: window.__buildMs,
+      frameInk: window.__frameInk, frameMid: window.__frameMid, frameWarm: window.__frameWarm, buildMs: window.__buildMs,
       canvas: (() => { const c = document.querySelector("canvas"); return c ? [c.width, c.height] : []; })(),
       mode: (document.querySelector("[data-mode].on") || {}).dataset?.mode,
       layer: document.getElementById("bLayer")?.textContent,
@@ -2702,14 +2736,36 @@ function draw() {
      任何延后读取（setTimeout / 上报时）都只能拿到清空后的全黑 ——
      这正是之前 ink 一直报 0 的原因，与画面是否正常无关。 */
   try {
-    const w2 = Math.min(64, gl.drawingBufferWidth), h2 = Math.min(64, gl.drawingBufferHeight);
-    const px2 = new Uint8Array(4 * w2 * h2);
-    gl.readPixels(0, 0, w2, h2, gl.RGBA, gl.UNSIGNED_BYTE, px2);
-    let nonBg = 0;
-    for (let i = 0; i < px2.length; i += 4) {
-      if (px2[i] || px2[i + 1] || px2[i + 2]) nonBg++;
+    /* 全画布扫描，分别统计三个指标（之前只读左下角 64x64，那里是网格
+       地板，打满 4096 会误判成「画面有内容」）：
+         inkPct  整幅画面的非背景像素占比
+         midPct  画面中部（25%~75%）的非背景像素占比 —— 模型在这里
+         warmPct 偏暖色像素占比（走线调色板是橙/红/黄，网格与背景是灰）
+       走线如果真画出来了，midPct 和 warmPct 都不会是 0。 */
+    const dw = gl.drawingBufferWidth, dh = gl.drawingBufferHeight;
+    const px2 = new Uint8Array(4 * dw * dh);
+    gl.readPixels(0, 0, dw, dh, gl.RGBA, gl.UNSIGNED_BYTE, px2);
+    const bg = [px2[0], px2[1], px2[2]];
+    const x0 = Math.floor(dw * 0.25), x1 = Math.floor(dw * 0.75);
+    const y0 = Math.floor(dh * 0.25), y1 = Math.floor(dh * 0.75);
+    let n = 0, ink = 0, mid = 0, warm = 0;
+    for (let y = 0; y < dh; y += 3) {
+      for (let x = 0; x < dw; x += 3) {
+        const i = (y * dw + x) * 4;
+        const r = px2[i], g = px2[i + 1], b = px2[i + 2];
+        n++;
+        const d = Math.abs(r - bg[0]) + Math.abs(g - bg[1]) + Math.abs(b - bg[2]);
+        if (d > 28) {
+          ink++;
+          if (x >= x0 && x < x1 && y >= y0 && y < y1) mid++;
+          if (r > b + 30 && r > 60) warm++;      // 暖色 = 走线（网格/背景是中性灰）
+        }
+      }
     }
-    window.__frameInk = nonBg;
+    const pct = (v) => n ? +(1000 * v / n).toFixed(1) / 10 : 0;
+    window.__frameInk = pct(ink);
+    window.__frameMid = pct(mid);
+    window.__frameWarm = pct(warm);
   } catch (e) { window.__frameInk = -1; }
 
   window.__stats = {
