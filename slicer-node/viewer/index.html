@@ -1194,7 +1194,7 @@ function buildSegTex() {
   const texels = segs * BOX_TEX_TEXELS_PER_SEG;
   let w = SEG_TEX_W_MAX;
   while (w > 16 && texels / w < 2) w >>= 1;
-  const h = Math.ceil(texels / w);
+  let h = Math.ceil(texels / w);   // let：下面按 MAX_TEXTURE_SIZE 压窄时会重算
   const data = new Float32Array(w * h * 4);
 
   const st = scene.stride;
