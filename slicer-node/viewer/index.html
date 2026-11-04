@@ -1149,6 +1149,44 @@ function showDiag() {
   document.body.appendChild(box);
 }
 
+/* 把渲染诊断 POST 给服务端（/diag）。
+   失败静默：这只是排查用，不能影响预览本身。 */
+function reportDiag() {
+  try {
+    const g = window.__gpu || (window.__gpu = gpuInfo());
+    const s = window.__stats || {};
+    let ink = -1;
+    try {
+      const c = document.querySelector("canvas");
+      const px = new Uint8Array(4 * c.width * c.height);
+      gl.readPixels(0, 0, c.width, c.height, gl.RGBA, gl.UNSIGNED_BYTE, px);
+      const bg = [px[0], px[1], px[2]];
+      let n = 0;
+      for (let i = 0; i < px.length; i += 4)
+        if (Math.abs(px[i]-bg[0]) + Math.abs(px[i+1]-bg[1]) + Math.abs(px[i+2]-bg[2]) > 25) n++;
+      ink = +(100 * n / (c.width * c.height)).toFixed(2);
+    } catch (e) { ink = -2; }
+    const body = {
+      ua: navigator.userAgent,
+      glver: window.__glver || "?",
+      vendor: g.vendor, renderer: g.renderer, maxTex: g.maxTex,
+      floatLinear: g.floatLinear, colorBufferFloat: g.colorBufferFloat,
+      boxPath: !!s.boxPath, segTexW: s.segTexW, segTexH: s.segTexH,
+      tier: s.tier, verts: s.verts, draws: s.draws, ink,
+      canvas: (() => { const c = document.querySelector("canvas"); return c ? [c.width, c.height] : []; })(),
+      mode: (document.querySelector("[data-mode].on") || {}).dataset?.mode,
+      layer: document.getElementById("bLayer")?.textContent,
+      floatProbe: window.__probe || null,
+      job: jobId,
+    };
+    fetch("/diag", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }).catch(() => {});
+  } catch (e) { /* 诊断失败不影响预览 */ }
+}
+
 function buildSegTex() {
   if (!scene.buf || !scene.segs) return false;
   if (segTex) { gl.deleteTexture(segTex); segTex = null; }
@@ -1574,6 +1612,9 @@ async function loadBin() {
        而 buildSegTex 刚跑完，第一帧可能还没落到 stats 上 ——
        否则会把「立体盒路径: 否」这种中间态误读出来。 */
     if (/(?:^|[?&])diag=1(?:&|$)/.test(location.search)) setTimeout(showDiag, 1200);
+    /* 无条件上报一次渲染诊断：内嵌 WebView 既开不了控制台、也没法手动
+       改地址，这是唯一能自动拿到现场状态的办法。服务端会落盘并打日志。 */
+    setTimeout(reportDiag, 1500);
     /* 数据到齐后建一次立体盒用的段纹理（RGBA32F，每段 3 texel）。
        失败也不影响旧路径：drawToolpaths 里 segTex 为空会退回圆管。 */
     try { buildSegTex(); } catch (e) { console.warn("段纹理构建失败：", e && e.message); segTex = null; }

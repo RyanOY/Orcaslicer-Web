@@ -13,6 +13,7 @@ import math
 import re
 import shutil
 import tempfile
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -88,6 +89,28 @@ app = FastAPI(title="orca slicer node", version=APP_VERSION, lifespan=lifespan)
 
 
 # ---------------------------------------------------------------- 基础
+
+@app.post("/diag")
+async def diag_report(payload: dict = Body(...)) -> dict[str, Any]:
+    """接收前端上报的渲染诊断信息。
+
+    内嵌 WebView（如飞牛OS 应用内浏览器）没有开发者工具，用户也无法
+    手动敲地址加参数。前端在加载完成后 POST 一次设备与渲染状态，
+    这里落到 /data/diag.json 并打日志，直接 `docker logs` 就能看到现场。
+    """
+    payload["ts"] = time.time()
+    try:
+        (Path(settings.data_dir) / "diag.json").write_text(
+            json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")
+    except Exception:  # noqa: BLE001
+        pass
+    ua = payload.get("ua", "")
+    print("[diag] ua=%s gl=%s renderer=%s boxPath=%s ink=%s verts=%s"
+          % (ua[:80], payload.get("glver"), payload.get("renderer"),
+             payload.get("boxPath"), payload.get("ink"), payload.get("verts")),
+          flush=True)
+    return {"ok": True}
+
 
 @app.get("/health")
 async def health() -> dict[str, Any]:
