@@ -647,6 +647,10 @@ uniform int uTexW;                       // 纹理宽度（texel）
 uniform float uBoxH;                     // 盒子高度 = 层高
 
 uniform vec3 uCam;                       // 相机位置（立体盒法线朝向要用）
+/* 坐标还原：纹理里存的是归一化到 0..1 的坐标（配合 RGBA16F 的精度），
+   这里乘回包围盒尺寸再加回原点。见 buildSegTex 里的说明。 */
+uniform vec3 uNormOrigin;                // bbox 最小角
+uniform vec3 uNormSpan;                  // bbox 三轴尺寸
 
 /* 输出：GLSL_HEAD 已经声明了 vColor / vFade，这里补自己的几个 */
 out vec3 vNrm;
@@ -680,8 +684,8 @@ void main() {
   vec4 t1 = texelAt(base + 1);
   vec4 t2 = texelAt(base + 2);
 
-  vec3 pos_a = vec3(t0.xy, t0.z);
-  vec3 pos_b = vec3(t1.xy, t0.z);
+  vec3 pos_a = t0.xyz * uNormSpan + uNormOrigin;   // 还原毫米坐标
+  vec3 pos_b = vec3(t1.xy, t0.z) * uNormSpan + uNormOrigin;
   /* 半宽 = 挤出线宽 / 2。像素下限放在**算完 pos 之后**按当前顶点深度处理，
      这里先留世界值 —— 详见下面 hwPx 那一段的说明。 */
   float hw = 0.5 * t1.z;
@@ -689,7 +693,7 @@ void main() {
   float hh = 0.5 * max(t0.w, 0.02);      // 半高 = 层高 / 2
   float ang = t2.w;                      // 拐角角度（0 = 无拐角）
 
-  float fade = layer_fade(t0.z);
+  float fade = layer_fade(pos_a.z);
   if (fade <= 0.0 || type_hidden(ty)) {
     vFade = 0.0; vColor = vec3(0.0); vNrm = vec3(0.0, 0.0, 1.0); vWpos = vec3(0.0);
     gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
@@ -767,7 +771,7 @@ void main() {
   pos.z -= hh;
 
   vWpos = pos;
-  vZbot = t0.z - t0.w;
+  vZbot = pos_a.z - t0.w;
   vZtop = t0.z;
   gl_Position = uVP * vec4(pos, 1.0);
 
@@ -940,7 +944,8 @@ const UN_NAMES = ["uVP", "uViewport", "uProj", "uLayerH", "uAreaOn", "uAreaStep"
   "uMode", "uZCur", "uZBot", "uHiddenMask", "uBg", "uLight", "uCam", "uShade",
   "uVRange", "uRowCount",
   "uSK", "uAO", "uSeam", "uEdge", "uJoin",
-  "uGloss", "uSegTex", "uTexW", "uBoxH", "uFirstSeg"];
+  "uGloss", "uSegTex", "uTexW", "uBoxH", "uFirstSeg",
+  "uNormOrigin", "uNormSpan"];
 const AT_NAMES = ["corner", "tube", "start", "end", "z", "type", "area", "attr",
                   "vact", "aeff", "nbP", "nbN", "rib", "hw", "nbrt", "vertexId"];
 
@@ -1016,6 +1021,7 @@ gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
    width_mm 按官方公式在 CPU 侧算好：截面积 ÷ 层高。 */
 const SEG_TEX_W_MAX = 4096;
 let segTex = null, segTexW = 0, segTexH = 0;
+let segNorm = null;   // 坐标归一化参数（还原用）
 
 /* 设备能力快照：内嵌 WebView 没法开开发者工具，把关键信息挂到
    window.__gpu 上，配合页面提示条做真机排查。 */
@@ -1240,6 +1246,19 @@ function buildSegTex() {
   let h = Math.ceil(texels / w);   // let：下面按 MAX_TEXTURE_SIZE 压窄时会重算
   const data = new Float32Array(w * h * 4);
 
+  /* 坐标归一化：立体盒原本用 RGBA32F 直接存毫米坐标，但部分移动 GPU
+     对 32 位浮点纹理的**采样**支持有坑（上传不报错、探针也能采到，
+     但整片实例数据渲染时失败 —— 用户实测立体盒完全画不出来、
+     兼容模式正常，能排除的就只剩这个）。
+     改成 RGBA16F + 归一化：float16 在 [0.5,1) 精度 2^-11 ≈ 0.0005，
+     乘回 100mm 尺寸误差 0.05mm，远小于一个像素（0.14mm），完全够用。
+     归一化用的包围盒参数通过 uniform 传给着色器还原。 */
+  const bbx = index.bbox || [0, 0, 0, 100, 100, 100];
+  const spanX = Math.max(1e-3, bbx[3] - bbx[0]);
+  const spanY = Math.max(1e-3, bbx[4] - bbx[1]);
+  const spanZ = Math.max(1e-3, bbx[5] - bbx[2]);
+  segNorm = { x0: bbx[0], y0: bbx[1], z0: bbx[2], sx: spanX, sy: spanY, sz: spanZ };
+
   const st = scene.stride;
   const f32 = new Float32Array(scene.buf);
   const u8 = new Uint8Array(scene.buf);
@@ -1293,8 +1312,14 @@ function buildSegTex() {
       }
     }
 
-    data[o] = x0; data[o + 1] = y0; data[o + 2] = zOf[i]; data[o + 3] = h;
-    data[o + 4] = x1; data[o + 5] = y1; data[o + 6] = width; data[o + 7] = ty;
+    data[o]     = (x0 - bbx[0]) / spanX;
+    data[o + 1] = (y0 - bbx[1]) / spanY;
+    data[o + 2] = (zOf[i] - bbx[2]) / spanZ;
+    data[o + 3] = h;
+    data[o + 4] = (x1 - bbx[0]) / spanX;
+    data[o + 5] = (y1 - bbx[1]) / spanY;
+    data[o + 6] = width;
+    data[o + 7] = ty;
     data[o + 8] = at; data[o + 9] = va; data[o + 10] = ae; data[o + 11] = ang;
   }
 
@@ -1313,7 +1338,7 @@ function buildSegTex() {
   if (!segTex) segTex = gl.createTexture();
   gl.bindTexture(gl.TEXTURE_2D, segTex);
   gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, w, h, 0, gl.RGBA, gl.FLOAT, data);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, w, h, 0, gl.RGBA, gl.FLOAT, data);
   const texErr = gl.getError();
   if (texErr !== 0) {
     console.warn("RGBA32F 纹理创建失败 err=" + texErr + "，退回圆管路径");
@@ -1349,11 +1374,16 @@ function buildSegTex() {
 const boxVertBuf = gl.createBuffer();
 gl.bindBuffer(gl.ARRAY_BUFFER, boxVertBuf);
 gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([0, 1, 2, 3, 4, 5, 6, 7]), gl.STATIC_DRAW);
-const boxIdxBuf = gl.createBuffer();
-gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, boxIdxBuf);
-gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array([
-  0, 1, 2, 0, 2, 3, 0, 3, 4, 0, 4, 5, 0, 5, 6, 0, 6, 1, 5, 4, 7, 5, 7, 6,
-]), gl.STATIC_DRAW);
+/* 24 个顶点 = 官方的 8 个角点按 INDEX_DATA 展开。
+   不用 ELEMENT_ARRAY_BUFFER + drawElementsInstanced，改 drawArraysInstanced：
+   实测该内嵌 WebView 上「索引 + 实例化」的组合画不出东西，而 ribbon 用的
+   drawArrays 一直正常，所以把索引展开成顶点序列，走同一条路径。
+   顶点顺序就是官方 SegmentTemplate.cpp 的 INDEX_DATA：
+     0,1,2 0,2,3 0,3,4 0,4,5 0,5,6 0,6,1 5,4,7 5,7,6 */
+const BOX_TRIS = [0,1,2, 0,2,3, 0,3,4, 0,4,5, 0,5,6, 0,6,1, 5,4,7, 5,7,6];
+const boxVertExBuf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, boxVertExBuf);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(BOX_TRIS), gl.STATIC_DRAW);
 
 const TUBE_SIDES = 8;            // 截面压扁后 6 边会看得出折面，8 边更接近真实丝形
 const TUBE_RINGS = {
@@ -2484,27 +2514,27 @@ function drawToolpaths(vp, proj, eye, h) {
     if (pr.u.uSegTex) gl.uniform1i(pr.u.uSegTex, 0);
     if (pr.u.uTexW) gl.uniform1i(pr.u.uTexW, segTexW);
     if (pr.u.uBoxH) gl.uniform1f(pr.u.uBoxH, h);
+    if (segNorm) {
+      if (pr.u.uNormOrigin) gl.uniform3f(pr.u.uNormOrigin, segNorm.x0, segNorm.y0, segNorm.z0);
+      if (pr.u.uNormSpan) gl.uniform3f(pr.u.uNormSpan, segNorm.sx, segNorm.sy, segNorm.sz);
+    }
 
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, segTex);
-    gl.bindBuffer(gl.ARRAY_BUFFER, boxVertBuf);
+    /* 24 顶点模板（官方 8 角点按索引展开），配 drawArraysInstanced */
+    gl.bindBuffer(gl.ARRAY_BUFFER, boxVertExBuf);
     if (pr.a.vertexId !== undefined) {
       gl.enableVertexAttribArray(pr.a.vertexId);
       gl.vertexAttribPointer(pr.a.vertexId, 1, gl.FLOAT, false, 0, 0);
       gl.vertexAttribDivisor(pr.a.vertexId, 0);
     }
-    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, boxIdxBuf);
     for (const [rb0, rb1] of scene.ranges) {
       const b0 = Math.max(rb0, loB), b1 = Math.min(rb1, hiB);
       const first = Math.floor(b0 / scene.stride);
       const total = Math.floor((b1 - b0) / scene.stride);
       if (total <= 0) continue;
-      /* 着色器按 gl_InstanceID 索引纹理，而它从 0 开始。
-         单层模式只画当前层那 3 层，起点不是 0，必须把这个偏移传进去，
-         否则一直读最前面几段 —— 那些段被 layer_fade 裁掉，画面就是空的
-         （实测 single 模式 ink 0.8% / accum·all 56%，就是这个原因）。 */
       if (pr.u.uFirstSeg) gl.uniform1i(pr.u.uFirstSeg, first);
-      gl.drawElementsInstanced(gl.TRIANGLES, 24, gl.UNSIGNED_SHORT, 0, total);
+      gl.drawArraysInstanced(gl.TRIANGLES, 0, 24, total);
       verts += 24 * total; draws++;
     }
     gl.bindTexture(gl.TEXTURE_2D, null);
