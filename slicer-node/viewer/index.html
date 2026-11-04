@@ -283,6 +283,7 @@ const gl = cv.getContext("webgl2", { antialias: true, alpha: false,
   depth: true, powerPreference: "high-performance",
   preserveDrawingBuffer: CAPTURE });
 const hintEl = document.getElementById("hint");
+try { window.__glver = gl.getParameter(gl.VERSION); } catch (e) { window.__glver = "?"; }
 
 /* ---------------------------------------------------------------- 矩阵 */
 const M4 = {
@@ -1088,8 +1089,13 @@ function probeFloatTexture(tex, w, h, data) {
       gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
       const gotX = (px[0] / 255 - 0.5) * 1000;
       const gotY = (px[1] / 255 - 0.5) * 1000;
-      // 允许量化误差（1/255*1000 ≈ 3.9mm）
-      ok = Math.abs(gotX - wantX) < 12 && Math.abs(gotY - wantY) < 12;
+      window.__probe = { wantX, wantY, px: [px[0], px[1], px[2], px[3]], gotX, gotY };
+      // 纹理里的值是毫米级世界坐标（0~350），编码成 0..1 再量化到 8 位
+      // 只有 1/255 的精度，换算回毫米约 3.9mm 一格。
+      // 这里要验证的是「能不能采到**非零且合理**的值」，而不是精度：
+      // 采样失败时 px 恒为 (0,0,0) 或完全随机，用 12mm 宽容差容易误判。
+      const plausible = (v, want) => Math.abs(v - want) < 12;
+      ok = plausible(gotX, wantX) && plausible(gotY, wantY);
       gl.viewport(prevView[0], prevView[1], prevView[2], prevView[3]);
     }
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
@@ -1101,6 +1107,46 @@ function probeFloatTexture(tex, w, h, data) {
     try { gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.enable(gl.DEPTH_TEST); } catch (_) {}
     return false;
   }
+}
+
+/* 页面内诊断：?diag=1 时显示 GPU 能力 + 渲染路径 + 墨量。
+   专为「开不了控制台的内嵌 WebView」准备。 */
+function showDiag() {
+  const g = window.__gpu || (window.__gpu = gpuInfo());
+  const s = window.__stats || {};
+  let ink = "?";
+  try {
+    const c = document.querySelector("canvas"), glx = gl;
+    const px = new Uint8Array(4 * c.width * c.height);
+    glx.readPixels(0, 0, c.width, c.height, glx.RGBA, glx.UNSIGNED_BYTE, px);
+    const bg = [px[0], px[1], px[2]];
+    let n = 0;
+    for (let i = 0; i < px.length; i += 4)
+      if (Math.abs(px[i]-bg[0]) + Math.abs(px[i+1]-bg[1]) + Math.abs(px[i+2]-bg[2]) > 25) n++;
+    ink = (100 * n / (c.width * c.height)).toFixed(1) + "%";
+  } catch (e) { ink = "读取失败"; }
+  const box = document.createElement("pre");
+  box.style.cssText = "position:fixed;right:8px;top:8px;z-index:9999;max-width:62vw;"
+    + "margin:0;padding:8px 10px;background:rgba(0,0,0,.86);color:#9fe;"
+    + "font:11px/1.45 ui-monospace,Menlo,monospace;border:1px solid #3a6;"
+    + "border-radius:6px;white-space:pre-wrap;pointer-events:none";
+  box.textContent = [
+    "飞牛预览诊断 (?diag=1)",
+    "GL 版本: " + (window.__glver || "?"),
+    "厂商: " + (g.vendor || "?"),
+    "渲染器: " + (g.renderer || "?"),
+    "最大纹理: " + (g.maxTex || "?"),
+    "浮点线性: " + (g.floatLinear ? "是" : "否"),
+    "浮点FBO: " + (g.colorBufferFloat ? "是" : "否"),
+    "立体盒路径: " + (s.boxPath ? "是" : "否(已降级)"),
+    "段纹理: " + (s.segTexW ? s.segTexW + "x" + s.segTexH : "未建"),
+    "几何档: " + (s.tier || "?"),
+    "顶点: " + (s.verts || 0),
+    "绘制调用: " + (s.draws || 0),
+    "画面墨量: " + ink,
+    "层: " + (document.getElementById("bLayer") || {}).textContent,
+  ].join("\n");
+  document.body.appendChild(box);
 }
 
 function buildSegTex() {
@@ -1521,6 +1567,13 @@ async function loadBin() {
   if (off >= total) {
     hintEl.textContent = "";
     window.__ready = true;
+    /* ?diag=1：把渲染关键状态写到页面右上角。内嵌 WebView（如飞牛OS
+       的应用内浏览器）开不了开发者工具，这是唯一能让用户自己读出
+       出错原因的方式。 */
+    /* 延后一点再出诊断面板：showDiag 读的是 __stats（由 draw() 写），
+       而 buildSegTex 刚跑完，第一帧可能还没落到 stats 上 ——
+       否则会把「立体盒路径: 否」这种中间态误读出来。 */
+    if (/(?:^|[?&])diag=1(?:&|$)/.test(location.search)) setTimeout(showDiag, 1200);
     /* 数据到齐后建一次立体盒用的段纹理（RGBA32F，每段 3 texel）。
        失败也不影响旧路径：drawToolpaths 里 segTex 为空会退回圆管。 */
     try { buildSegTex(); } catch (e) { console.warn("段纹理构建失败：", e && e.message); segTex = null; }
