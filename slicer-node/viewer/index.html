@@ -1008,6 +1008,101 @@ gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
 const SEG_TEX_W_MAX = 4096;
 let segTex = null, segTexW = 0, segTexH = 0;
 
+/* 设备能力快照：内嵌 WebView 没法开开发者工具，把关键信息挂到
+   window.__gpu 上，配合页面提示条做真机排查。 */
+function gpuInfo() {
+  try {
+    const exts = gl.getSupportedExtensions() || [];
+    return {
+      webgl2: true,
+      vendor: gl.getParameter(gl.VENDOR),
+      renderer: gl.getParameter(gl.RENDERER),
+      maxTex: gl.getParameter(gl.MAX_TEXTURE_SIZE),
+      floatLinear: exts.includes("OES_texture_float_linear"),
+      colorBufferFloat: exts.includes("EXT_color_buffer_float"),
+      maxVarying: gl.getParameter(gl.MAX_VARYING_VECTORS),
+    };
+  } catch (e) { return { err: e && e.message }; }
+}
+
+/* 验证 float 纹理在本机 GPU 上**真的能采样**。
+   做法：贴在 1x1 的 framebuffer 上画一个全屏三角形，把 texelFetch 的
+   前两个分量编码成颜色输出，读回比对。
+   返回 true 表示可用；false 表示要么采样恒 0、要么精度完全丢失。
+   这个检测是必要的：texImage2D 对 RGBA32F 往往"假成功"——
+   上传不报错，但采样不出值，内嵌 WebView 里尤其常见。 */
+let floatProbeProg = null;
+function probeFloatTexture(tex, w, h, data) {
+  try {
+    const wantX = data[0], wantY = data[1];
+    if (floatProbeProg === null) {
+      const vs = `#version 300 es
+      precision highp float; precision highp sampler2D;
+      uniform sampler2D uT; uniform int uW;
+      out vec4 vC;
+      void main() {
+        vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2) * 2.0 - 1.0;
+        vC = texelFetch(uT, ivec2(0, 0), 0);
+        gl_Position = vec4(p, 0.0, 1.0);
+      }`;
+      const fs = `#version 300 es
+      precision highp float;
+      in vec4 vC; out vec4 o;
+      // 把 x,y 缩放到 0..1 区间（坐标是毫米级，除以 1000 足够）
+      void main() { o = vec4(vC.x / 1000.0 + 0.5, vC.y / 1000.0 + 0.5, 0.0, 1.0); }`;
+      const mk = (t, src) => {
+        const sh = gl.createShader(t); gl.shaderSource(sh, src); gl.compileShader(sh);
+        if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(sh));
+        return sh;
+      };
+      floatProbeProg = gl.createProgram();
+      gl.attachShader(floatProbeProg, mk(gl.VERTEX_SHADER, vs));
+      gl.attachShader(floatProbeProg, mk(gl.FRAGMENT_SHADER, fs));
+      gl.linkProgram(floatProbeProg);
+      if (!gl.getProgramParameter(floatProbeProg, gl.LINK_STATUS))
+        throw new Error(gl.getProgramInfoLog(floatProbeProg));
+    }
+
+    // 1x1 离屏 framebuffer
+    const fbTex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, fbTex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    const fb = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, fbTex, 0);
+    const okFb = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+
+    let ok = false;
+    if (okFb) {
+      const prevView = gl.getParameter(gl.VIEWPORT);
+      gl.viewport(0, 0, 1, 1);
+      gl.useProgram(floatProbeProg);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.uniform1i(gl.getUniformLocation(floatProbeProg, "uT"), 0);
+      gl.disable(gl.DEPTH_TEST); gl.disable(gl.BLEND); gl.disable(gl.CULL_FACE);
+      gl.colorMask(true, true, true, true);
+      gl.clearColor(0, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+      const px = new Uint8Array(4);
+      gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+      const gotX = (px[0] / 255 - 0.5) * 1000;
+      const gotY = (px[1] / 255 - 0.5) * 1000;
+      // 允许量化误差（1/255*1000 ≈ 3.9mm）
+      ok = Math.abs(gotX - wantX) < 12 && Math.abs(gotY - wantY) < 12;
+      gl.viewport(prevView[0], prevView[1], prevView[2], prevView[3]);
+    }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.deleteFramebuffer(fb); gl.deleteTexture(fbTex);
+    gl.enable(gl.DEPTH_TEST);
+    return ok;
+  } catch (e) {
+    console.warn("float 纹理探针失败：", e && e.message);
+    try { gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.enable(gl.DEPTH_TEST); } catch (_) {}
+    return false;
+  }
+}
+
 function buildSegTex() {
   if (!scene.buf || !scene.segs) return false;
   if (segTex) { gl.deleteTexture(segTex); segTex = null; }
@@ -1103,6 +1198,22 @@ function buildSegTex() {
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
   gl.bindTexture(gl.TEXTURE_2D, null);
+
+  /* **实采样校验**：texImage2D 不报错 ≠ 纹理真的能采。
+     部分内嵌 WebView（飞牛OS 的应用内浏览器就是）会接受 RGBA32F 的
+     上传调用，但 GPU 实际不支持 float 采样 —— 采样结果恒为 0，
+     于是所有段的坐标/宽度都变成 0，盒子塌成一点，画面空掉。
+     这里画一个全屏三角形采一次 texel，读回像素验证：
+       采样到 data[0..3] 的正确值才算可用，否则判定不支持并退回圆管。 */
+  if (!probeFloatTexture(segTex, w, h, data)) {
+    console.warn("RGBA32F 纹理无法采样（内嵌 WebView 常见），退回圆管路径");
+    gl.deleteTexture(segTex); segTex = null;
+    /* 内嵌 WebView 往往没有开发者工具，把原因写到页面提示条上，
+       用户截图就能反馈。 */
+    if (hintEl) hintEl.textContent = "设备不支持浮点纹理，已切到兼容渲染";
+    return false;
+  }
+
   segTexW = w; segTexH = h;
   return true;
 }
@@ -2475,6 +2586,7 @@ function draw() {
   window.__stats = {
     tier, draws: st.draws, verts: st.verts, ranges: scene.ranges.length,
     boxPath: !!(progBox2 && segTex && !NO_BOX), segTexW, segTexH,
+    gpu: window.__gpu || (window.__gpu = gpuInfo()),
     segs: scene.segs, bytes: scene.bytes, total: scene.total,
     ms: +costMs.toFixed(2), penalty: perfPenalty,
   };
