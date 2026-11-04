@@ -1151,6 +1151,17 @@ async function renderPreview() {
   const frame = $("#pvframe");
   const want = `/viewer/?job=${id}`;
   if (!frame.src.endsWith(want)) frame.src = want;
+  /* 「独立打开」：飞牛OS 等内嵌 WebView 里，iframe 内的 WebGL 画布
+     可能渲染正确但合不上屏（画布能 readPixels 到内容，屏幕却是空的）。
+     在独立窗口/新标签里打开可以绕开 iframe 合成路径。 */
+  const openBtn = $("#btn-pv-open");
+  if (openBtn && !openBtn._bound) {
+    openBtn._bound = true;
+    openBtn.addEventListener("click", () => {
+      const j = (state.job && state.job.id) || state.jobId;
+      if (j) window.open(`/viewer/?job=${j}`, "_blank");
+    });
+  }
   const g = $("#pv-gcode");
   if (s.gcode_bytes) { g.href = `/jobs/${id}/gcode`; g.style.display = "inline"; }
   else g.style.display = "none";

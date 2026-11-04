@@ -1173,6 +1173,7 @@ function reportDiag() {
       floatLinear: g.floatLinear, colorBufferFloat: g.colorBufferFloat,
       boxPath: !!s.boxPath, segTexW: s.segTexW, segTexH: s.segTexH,
       tier: s.tier, verts: s.verts, draws: s.draws, ink,
+      frameInk: window.__frameInk, buildMs: window.__buildMs,
       canvas: (() => { const c = document.querySelector("canvas"); return c ? [c.width, c.height] : []; })(),
       mode: (document.querySelector("[data-mode].on") || {}).dataset?.mode,
       layer: document.getElementById("bLayer")?.textContent,
@@ -1617,7 +1618,26 @@ async function loadBin() {
     setTimeout(reportDiag, 1500);
     /* 数据到齐后建一次立体盒用的段纹理（RGBA32F，每段 3 texel）。
        失败也不影响旧路径：drawToolpaths 里 segTex 为空会退回圆管。 */
+    const tBuild = performance.now();
     try { buildSegTex(); } catch (e) { console.warn("段纹理构建失败：", e && e.message); segTex = null; }
+    window.__buildMs = +(performance.now() - tBuild).toFixed(1);
+    /* 纹理建好后必须再画一帧：buildSegTex 期间主线程被占住，
+       这期间浏览器可能已经放弃了「再合成一次」的请求，
+       结果屏幕上停在纹理建之前的最后一帧（或空白）。 */
+    ribbonKey = "";
+    requestDraw();
+    /* **连画几帧**：部分内嵌 WebView（实测飞牛OS 的 Android WebView）
+       在主线程被长任务（buildSegTex）阻塞之后，会丢掉「这一帧已更新」
+       的合成请求 —— 画布内容其实是对的（同帧 readPixels 能读到 4096 个
+       非背景像素），但屏幕上永远停在阻塞前的画面。
+       连画 3 帧 + 隔一小段时间再补，把这个合成请求重新递上去。 */
+    let kickN = 0;
+    const kick = () => {
+      resize();
+      requestDraw();
+      if (++kickN < 3) setTimeout(kick, 90);
+    };
+    setTimeout(kick, 60);
   }
   requestDraw();
 }
@@ -2677,6 +2697,21 @@ function draw() {
   gl.disable(gl.CULL_FACE);       // 见上：稳定起见一律不剔除
   const st = drawToolpaths(vp, projPx, eye, layerHeight(cur)) || { verts: 0, draws: 0 };
   const costMs = performance.now() - t0;
+  /* 同一帧内读一次像素：WebGL 的 readPixels 只有在「刚绘制完、
+     还没提交合成」时才能读到真实内容。preserveDrawingBuffer=false 时，
+     任何延后读取（setTimeout / 上报时）都只能拿到清空后的全黑 ——
+     这正是之前 ink 一直报 0 的原因，与画面是否正常无关。 */
+  try {
+    const w2 = Math.min(64, gl.drawingBufferWidth), h2 = Math.min(64, gl.drawingBufferHeight);
+    const px2 = new Uint8Array(4 * w2 * h2);
+    gl.readPixels(0, 0, w2, h2, gl.RGBA, gl.UNSIGNED_BYTE, px2);
+    let nonBg = 0;
+    for (let i = 0; i < px2.length; i += 4) {
+      if (px2[i] || px2[i + 1] || px2[i + 2]) nonBg++;
+    }
+    window.__frameInk = nonBg;
+  } catch (e) { window.__frameInk = -1; }
+
   window.__stats = {
     tier, draws: st.draws, verts: st.verts, ranges: scene.ranges.length,
     boxPath: !!(progBox2 && segTex && !NO_BOX), segTexW, segTexH,
